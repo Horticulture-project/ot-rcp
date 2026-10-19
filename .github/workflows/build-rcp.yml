@@ -7,10 +7,15 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    # Note: the `env` context is not available in container.image, so the tag is hardcoded here.
+    # Pinned: ubuntu-latest is migrating to Ubuntu 26
+    runs-on: ubuntu-24.04
+    # Official NCS toolchain image. `env` is not allowed in container.image, so the tag is
+    # hardcoded; keep it in sync with NCS_VERSION below.
     container:
-      image: nordicsemi/nrfconnect-sdk:v3.4.1
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.4.1
+    defaults:
+      run:
+        shell: bash  # required so the toolchain environment is loaded
     env:
       NCS_VERSION: v3.4.1
 
@@ -65,11 +70,26 @@ jobs:
         with:
           path: ot-rcp
 
+      - name: Cache NCS workspace
+        uses: actions/cache@v4
+        with:
+          path: ncs
+          key: ncs-${{ env.NCS_VERSION }}
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.board }}-${{ env.NCS_VERSION }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.board }}-${{ env.NCS_VERSION }}-
+
       - name: Initialize west workspace
         run: |
-          west init -m https://github.com/nrfconnect/sdk-nrf --mr ${NCS_VERSION} ncs
+          if [ ! -d ncs/.west ]; then
+            west init -m https://github.com/nrfconnect/sdk-nrf --mr ${NCS_VERSION} ncs
+          fi
           cd ncs
-          west update --narrow -o=--depth=1
+          west update --narrow -o=--depth=1   # fast no-op when restored from cache
           west zephyr-export
 
       - name: Generate UART devicetree overlay
@@ -101,15 +121,21 @@ jobs:
             DTC="$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
           fi
 
+          LAUNCHER=""
+          if command -v ccache >/dev/null; then
+            export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+            LAUNCHER="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          fi
           west build -b ${{ matrix.board }} $APP -d build -p always -- \
             -DEXTRA_CONF_FILE="$CONF" \
-            -DEXTRA_DTC_OVERLAY_FILE="$DTC"
+            -DEXTRA_DTC_OVERLAY_FILE="$DTC" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Package DFU zip (Holyiot dongle)
         if: ${{ matrix.usb }}
         run: |
-          pip install nrfutil
-          nrfutil pkg generate --hw-version 52 --sd-req 0x00 --sd-id 0x00 \
+          nrfutil install nrf5sdk-tools
+          nrfutil nrf5sdk-tools pkg generate --hw-version 52 --sd-req 0x00 --sd-id 0x00 \
             --application ncs/build/*/zephyr/zephyr.hex --application-version 1 \
             ncs/build/dfu_application.zip
 
