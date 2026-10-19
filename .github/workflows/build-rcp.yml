@@ -13,7 +13,7 @@ on:
 jobs:
   build:
     # Pinned: ubuntu-latest is migrating to Ubuntu 26
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     # Official NCS toolchain image. `env` is not allowed in container.image, so the tag is
     # hardcoded; keep it in sync with NCS_VERSION below.
     container:
@@ -73,18 +73,18 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: ot-rcp
 
       - name: Cache NCS workspace
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ncs
           key: ncs-${{ env.NCS_VERSION }}
 
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .ccache
           key: ccache-${{ matrix.board }}-${{ env.NCS_VERSION }}-${{ github.sha }}
@@ -165,7 +165,7 @@ jobs:
           [ -f ncs/build/dfu_application.zip ] && cp ncs/build/dfu_application.zip "out/rcp-$BASE-dfu.zip" || true
 
       - name: Archive build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rcp-${{ steps.collect.outputs.base }}
           path: out/*
@@ -182,14 +182,14 @@ jobs:
       THREAD_VERSION: "1.4"   # Thread version reported by the OpenThread library
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: rcp-*
           path: dist
           merge-multiple: true
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ncs-${{ env.NCS_VERSION }}_thread-${{ env.THREAD_VERSION }}_ot-${{ needs.build.outputs.ot_sha }}
           name: RCP firmware - NCS ${{ env.NCS_VERSION }} / Thread ${{ env.THREAD_VERSION }} / OpenThread ${{ needs.build.outputs.ot_sha }}
