@@ -73,18 +73,18 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           path: ot-rcp
 
       - name: Cache NCS workspace
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ncs
           key: ncs-${{ env.NCS_VERSION }}
 
       - name: Cache ccache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: .ccache
           key: ccache-${{ matrix.board }}-${{ env.NCS_VERSION }}-${{ github.sha }}
@@ -165,7 +165,7 @@ jobs:
           [ -f ncs/build/dfu_application.zip ] && cp ncs/build/dfu_application.zip "out/rcp-$BASE-dfu.zip" || true
 
       - name: Archive build artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: rcp-${{ steps.collect.outputs.base }}
           path: out/*
@@ -182,7 +182,7 @@ jobs:
       THREAD_VERSION: "1.4"   # Thread version reported by the OpenThread library
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: rcp-*
           path: dist
