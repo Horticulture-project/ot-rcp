@@ -25,7 +25,7 @@ jobs:
         include:
           # Holyiot dongle: always USB CDC ACM, baud/flow are irrelevant
           - name: holyiot-nrf52840-dongle
-            board: nrf52840dongle_nrf52840
+            board: nrf52840dongle/nrf52840
             usb: true
             board_overlay: ''
             uart: ''
@@ -34,32 +34,32 @@ jobs:
 
           # Ebyte E73 (nRF52840)
           - name: ebyte-e73-nrf52840
-            board: nrf52840dk_nrf52840
+            board: nrf52840dk/nrf52840
             usb: false
             board_overlay: nrf52840dk_nrf52840.overlay
             uart: uart0
             baud: 115200
             flow: n
           - name: ebyte-e73-nrf52840
-            board: nrf52840dk_nrf52840
+            board: nrf52840dk/nrf52840
             usb: false
             board_overlay: nrf52840dk_nrf52840.overlay
             uart: uart0
             baud: 460800
             flow: y
 
-          # Ezurio (nRF54L15)
+          # Ezurio (nRF54L15): built as a generic nRF54L15 (DK board definition + our pin overlay)
           - name: ezurio-nrf54l15
-            board: sela_nrf54l15_cpuapp
+            board: nrf54l15dk/nrf54l15/cpuapp
             usb: false
-            board_overlay: sela_nrf54l15_cpuapp.overlay
+            board_overlay: nrf54l15dk_nrf54l15_cpuapp.overlay
             uart: uart20
             baud: 115200
             flow: n
           - name: ezurio-nrf54l15
-            board: sela_nrf54l15_cpuapp
+            board: nrf54l15dk/nrf54l15/cpuapp
             usb: false
-            board_overlay: sela_nrf54l15_cpuapp.overlay
+            board_overlay: nrf54l15dk_nrf54l15_cpuapp.overlay
             uart: uart20
             baud: 460800
             flow: y
@@ -111,14 +111,11 @@ jobs:
         working-directory: ncs
         run: |
           APP=nrf/samples/openthread/coprocessor
-          CONF="$GITHUB_WORKSPACE/ot-rcp/conf/overlay-rcp.conf"
-
-          if [ "${{ matrix.usb }}" = "true" ]; then
-            # Sample-provided USB CDC ACM configuration
-            CONF="overlay-usb.conf;$CONF"
-            DTC="usb.overlay"
-          else
-            DTC="$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
+          # The sample's prj.conf already selects RCP, and the dongle's USB CDC ACM config
+          # comes from the sample's boards/nrf52840dongle_nrf52840.conf.
+          EXTRA=""
+          if [ "${{ matrix.usb }}" != "true" ]; then
+            EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
           fi
 
           LAUNCHER=""
@@ -127,9 +124,7 @@ jobs:
             LAUNCHER="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
           fi
           west build -b ${{ matrix.board }} $APP -d build -p always -- \
-            -DEXTRA_CONF_FILE="$CONF" \
-            -DEXTRA_DTC_OVERLAY_FILE="$DTC" \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            $EXTRA $LAUNCHER
 
       - name: Package DFU zip (Holyiot dongle)
         if: ${{ matrix.usb }}

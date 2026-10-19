@@ -20,9 +20,9 @@ The Host and the RCP communicate over a serial link (UART or USB virtual COM por
 
 | Hardware Module | SoC Family | Host Interface | Config Target |
 | :--- | :--- | :--- | :--- |
-| **Holyiot Dongle** | nRF52840 | USB (Virtual Serial / CDC ACM) | `nrf52840dongle_nrf52840` |
-| **Ebyte E73** | nRF52840 | Physical UART (Pins Rx/Tx) | `nrf52840dk_nrf52840` |
-| **Ezurio Module** | nRF54L15 | Physical UART (Pins Rx/Tx) | `sela_nrf54l15_cpuapp` |
+| **Holyiot Dongle** | nRF52840 | USB (Virtual Serial / CDC ACM) | `nrf52840dongle/nrf52840` |
+| **Ebyte E73** | nRF52840 | Physical UART (Pins Rx/Tx) | `nrf52840dk/nrf52840` |
+| **Ezurio Module** | nRF54L15 | Physical UART (Pins Rx/Tx) | `nrf54l15dk/nrf54l15/cpuapp` (generic nRF54L15 + custom pin overlay) |
 
 ---
 
@@ -35,7 +35,7 @@ Each matrix entry uploads its own artifact (`rcp-<module>-<baud>baud-<flow|noflo
 * `zephyr.hex` / `zephyr.bin` – Raw binaries for hardware programmers (SWD).
 * `dfu_application.zip` – Holyiot dongle only: update package for the USB DFU bootloader (generated with `nrfutil pkg generate`).
 
-Baud rate and hardware flow control are applied through a generated devicetree overlay (`current-speed` / `hw-flow-control`) on top of the pin overlays in [boards/](boards). RCP mode is selected by [conf/overlay-rcp.conf](conf/overlay-rcp.conf).
+Baud rate and hardware flow control are applied through a generated devicetree overlay (`current-speed` / `hw-flow-control`) on top of the pin overlays in [boards/](boards). RCP mode and the dongle's USB CDC ACM setup come from the NCS `coprocessor` sample itself.
 
 ---
 
