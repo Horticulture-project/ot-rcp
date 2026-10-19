@@ -1,0 +1,106 @@
+name: Build OpenThread RCP Firmware
+
+env:
+  NCS_VERSION: v3.4.1
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: nordicsemi/nrfconnect-sdk:${{ env.NCS_VERSION }}
+
+    strategy:
+      matrix:
+        include:
+          # Holyiot Dongle (Alltid USB CDC, påvirkes ikke av baud/flow på pins)
+          - name: holyiot-nrf52840-dongle
+            board: nrf52840dongle_nrf52840
+            conf_overlay: overlay-usb.conf
+            baud: 115200
+            flow: n
+
+          # Ebyte E73 (Standard)
+          - name: ebyte-e73-nrf52840
+            board: nrf52840dk_nrf52840
+            conf_overlay: overlay-uart.conf
+            baud: 115200
+            flow: n
+
+          # Ebyte E73 (High Speed med Flytkontroll)
+          - name: ebyte-e73-nrf52840
+            board: nrf52840dk_nrf52840
+            conf_overlay: overlay-uart.conf
+            baud: 460800
+            flow: y
+
+          # Ezurio (Standard)
+          - name: ezurio-nrf54l15
+            board: sela_nrf54l15_cpuapp
+            conf_overlay: overlay-uart.conf
+            baud: 115200
+            flow: n
+
+          # Ezurio (High Speed med Flytkontroll)
+          - name: ezurio-nrf54l15
+            board: sela_nrf54l15_cpuapp
+            conf_overlay: overlay-uart.conf
+            baud: 460800
+            flow: y
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize west workspace
+        run: |
+          west init -m https://github.com --mr ${{ env.NCS_VERSION }}
+          west update
+          west zephyr-export
+
+      - name: Create Base Configuration Overlays
+        run: |
+          cat << 'EOF' > overlay-usb.conf
+          CONFIG_USB_DEVICE_STACK=y
+          CONFIG_USB_CDC_ACM=y
+          CONFIG_SERIAL=y
+          CONFIG_UART_LINE_CTRL=y
+          CONFIG_OPENTHREAD_COPROCESSOR_SPINEL_ON_UART=y
+          CONFIG_UART_SHELL=n
+          EOF
+
+          cat << 'EOF' > overlay-uart.conf
+          CONFIG_SERIAL=y
+          CONFIG_OPENTHREAD_COPROCESSOR_SPINEL_ON_UART=y
+          CONFIG_UART_SHELL=n
+          EOF
+
+      - name: Build RCP Firmware
+        run: |
+          # Generer dynamiske flagg for baudrate og flytkontroll basert på matrisen
+          DYNAMIC_CONF="CONFIG_UART_0_BAUD_RATE=${{ matrix.baud }}\nCONFIG_UART_20_BAUD_RATE=${{ matrix.baud }}\n"
+
+          if [ "${{ matrix.flow }}" = "y" ]; then
+            DYNAMIC_CONF="${DYNAMIC_CONF}CONFIG_UART_0_NRF_HW_ASYNC_FLW_CTRL=y\nCONFIG_UART_20_NRF_HW_ASYNC_FLW_CTRL=y\n"
+          fi
+
+          echo -e "$DYNAMIC_CONF" > overlay-dynamic.conf
+
+          west build -b ${{ matrix.board }} \
+            samples/net/openthread/coprocessor \
+            -- \
+            -DCONF_FILE="prj.conf;$GITHUB_WORKSPACE/${{ matrix.conf_overlay }};overlay-dynamic.conf" \
+            -DEXTRA_DTC_OVERLAY_FILE_DIR="$GITHUB_WORKSPACE/boards"
+
+      - name: Archive Build Artifacts
+        uses: actions/artifacts@v4
+        with:
+          name: rcp-${{ matrix.name }}-${{ matrix.baud }}baud-${{ matrix.flow == 'y' && 'flow' || 'noflow' }}
+          path: |
+            build/zephyr/zephyr.hex
+            build/zephyr/zephyr.bin
+            build/zephyr/dfu_application.zip
