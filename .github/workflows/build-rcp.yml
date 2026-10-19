@@ -1,106 +1,128 @@
 name: Build OpenThread RCP Firmware
 
-env:
-  NCS_VERSION: v3.4.1
-
 on:
   push:
-    branches: [ main ]
+    branches: [ main, Zephyr-ncp ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Note: the `env` context is not available in container.image, so the tag is hardcoded here.
     container:
-      image: nordicsemi/nrfconnect-sdk:${{ env.NCS_VERSION }}
+      image: nordicsemi/nrfconnect-sdk:v3.4.1
+    env:
+      NCS_VERSION: v3.4.1
 
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # Holyiot Dongle (Alltid USB CDC, påvirkes ikke av baud/flow på pins)
+          # Holyiot dongle: always USB CDC ACM, baud/flow are irrelevant
           - name: holyiot-nrf52840-dongle
             board: nrf52840dongle_nrf52840
-            conf_overlay: overlay-usb.conf
-            baud: 115200
+            usb: true
+            board_overlay: ''
+            uart: ''
+            baud: 0
             flow: n
 
-          # Ebyte E73 (Standard)
+          # Ebyte E73 (nRF52840)
           - name: ebyte-e73-nrf52840
             board: nrf52840dk_nrf52840
-            conf_overlay: overlay-uart.conf
+            usb: false
+            board_overlay: nrf52840dk_nrf52840.overlay
+            uart: uart0
             baud: 115200
             flow: n
-
-          # Ebyte E73 (High Speed med Flytkontroll)
           - name: ebyte-e73-nrf52840
             board: nrf52840dk_nrf52840
-            conf_overlay: overlay-uart.conf
+            usb: false
+            board_overlay: nrf52840dk_nrf52840.overlay
+            uart: uart0
             baud: 460800
             flow: y
 
-          # Ezurio (Standard)
+          # Ezurio (nRF54L15)
           - name: ezurio-nrf54l15
             board: sela_nrf54l15_cpuapp
-            conf_overlay: overlay-uart.conf
+            usb: false
+            board_overlay: sela_nrf54l15_cpuapp.overlay
+            uart: uart20
             baud: 115200
             flow: n
-
-          # Ezurio (High Speed med Flytkontroll)
           - name: ezurio-nrf54l15
             board: sela_nrf54l15_cpuapp
-            conf_overlay: overlay-uart.conf
+            usb: false
+            board_overlay: sela_nrf54l15_cpuapp.overlay
+            uart: uart20
             baud: 460800
             flow: y
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          path: ot-rcp
 
       - name: Initialize west workspace
         run: |
-          west init -m https://github.com --mr ${{ env.NCS_VERSION }}
-          west update
+          west init -m https://github.com/nrfconnect/sdk-nrf --mr ${NCS_VERSION} ncs
+          cd ncs
+          west update --narrow -o=--depth=1
           west zephyr-export
 
-      - name: Create Base Configuration Overlays
+      - name: Generate UART devicetree overlay
+        if: ${{ !matrix.usb }}
         run: |
-          cat << 'EOF' > overlay-usb.conf
-          CONFIG_USB_DEVICE_STACK=y
-          CONFIG_USB_CDC_ACM=y
-          CONFIG_SERIAL=y
-          CONFIG_UART_LINE_CTRL=y
-          CONFIG_OPENTHREAD_COPROCESSOR_SPINEL_ON_UART=y
-          CONFIG_UART_SHELL=n
-          EOF
+          {
+            echo "&${{ matrix.uart }} {"
+            echo "    current-speed = <${{ matrix.baud }}>;"
+            if [ "${{ matrix.flow }}" = "y" ]; then
+              echo "    hw-flow-control;"
+            else
+              echo "    /delete-property/ hw-flow-control;"
+            fi
+            echo "};"
+          } > "$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
+          cat "$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
 
-          cat << 'EOF' > overlay-uart.conf
-          CONFIG_SERIAL=y
-          CONFIG_OPENTHREAD_COPROCESSOR_SPINEL_ON_UART=y
-          CONFIG_UART_SHELL=n
-          EOF
-
-      - name: Build RCP Firmware
+      - name: Build RCP firmware
+        working-directory: ncs
         run: |
-          # Generer dynamiske flagg for baudrate og flytkontroll basert på matrisen
-          DYNAMIC_CONF="CONFIG_UART_0_BAUD_RATE=${{ matrix.baud }}\nCONFIG_UART_20_BAUD_RATE=${{ matrix.baud }}\n"
+          APP=nrf/samples/openthread/coprocessor
+          CONF="$GITHUB_WORKSPACE/ot-rcp/conf/overlay-rcp.conf"
 
-          if [ "${{ matrix.flow }}" = "y" ]; then
-            DYNAMIC_CONF="${DYNAMIC_CONF}CONFIG_UART_0_NRF_HW_ASYNC_FLW_CTRL=y\nCONFIG_UART_20_NRF_HW_ASYNC_FLW_CTRL=y\n"
+          if [ "${{ matrix.usb }}" = "true" ]; then
+            # Sample-provided USB CDC ACM configuration
+            CONF="overlay-usb.conf;$CONF"
+            DTC="usb.overlay"
+          else
+            DTC="$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
           fi
 
-          echo -e "$DYNAMIC_CONF" > overlay-dynamic.conf
+          west build -b ${{ matrix.board }} $APP -d build -p always -- \
+            -DEXTRA_CONF_FILE="$CONF" \
+            -DEXTRA_DTC_OVERLAY_FILE="$DTC"
 
-          west build -b ${{ matrix.board }} \
-            samples/net/openthread/coprocessor \
-            -- \
-            -DCONF_FILE="prj.conf;$GITHUB_WORKSPACE/${{ matrix.conf_overlay }};overlay-dynamic.conf" \
-            -DEXTRA_DTC_OVERLAY_FILE_DIR="$GITHUB_WORKSPACE/boards"
+      - name: Package DFU zip (Holyiot dongle)
+        if: ${{ matrix.usb }}
+        run: |
+          pip install nrfutil
+          nrfutil pkg generate --hw-version 52 --sd-req 0x00 --sd-id 0x00 \
+            --application ncs/build/*/zephyr/zephyr.hex --application-version 1 \
+            ncs/build/dfu_application.zip
 
-      - name: Archive Build Artifacts
-        uses: actions/artifacts@v4
+      - name: Collect artifacts
+        run: |
+          mkdir -p out
+          cp ncs/build/*/zephyr/zephyr.hex ncs/build/*/zephyr/zephyr.bin out/ 2>/dev/null || \
+            cp ncs/build/zephyr/zephyr.hex ncs/build/zephyr/zephyr.bin out/
+          [ -f ncs/build/dfu_application.zip ] && cp ncs/build/dfu_application.zip out/ || true
+
+      - name: Archive build artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: rcp-${{ matrix.name }}-${{ matrix.baud }}baud-${{ matrix.flow == 'y' && 'flow' || 'noflow' }}
-          path: |
-            build/zephyr/zephyr.hex
-            build/zephyr/zephyr.bin
-            build/zephyr/dfu_application.zip
+          path: out/*
+          if-no-files-found: error

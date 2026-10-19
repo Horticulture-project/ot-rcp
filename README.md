@@ -1,5 +1,7 @@
 # OpenThread RCP Firmware Project
 
+[![Build RCP](https://github.com/Horticulture-project/ot-ncp/actions/workflows/build-rcp.yml/badge.svg)](https://github.com/Horticulture-project/ot-ncp/actions/workflows/build-rcp.yml)
+
 This project automates the compilation of **OpenThread 1.4 Radio Co-Processor (RCP)** firmware for multiple nRF-based wireless modules using GitHub Actions. It targets **nRF Connect SDK (NCS) v3.4.1 (LTS)** and provides optimized configurations for different deployment styles (USB CDC ACM vs. Physical UART).
 
 ---
@@ -29,9 +31,11 @@ The Host and the RCP communicate over a serial link (UART or USB virtual COM por
 Every time you push to the `main` branch or trigger the workflow manually via **Workflow Dispatch**, GitHub Actions compiles the firmware using Nordic's official NCS v3.4.1 Docker environment.
 
 ### Output Artifacts
-The build produces a zip-archive containing:
+Each matrix entry uploads its own artifact (`rcp-<module>-<baud>baud-<flow|noflow>`) containing:
 * `zephyr.hex` / `zephyr.bin` – Raw binaries for hardware programmers (SWD).
-* `dfu_application.zip` – OTA/USB update package specifically for the Holyiot DFU bootloader.
+* `dfu_application.zip` – Holyiot dongle only: update package for the USB DFU bootloader (generated with `nrfutil pkg generate`).
+
+Baud rate and hardware flow control are applied through a generated devicetree overlay (`current-speed` / `hw-flow-control`) on top of the pin overlays in [boards/](boards). RCP mode is selected by [conf/overlay-rcp.conf](conf/overlay-rcp.conf).
 
 ---
 
@@ -43,6 +47,8 @@ This device features a pre-flashed USB bootloader. You do **not** need a hardwar
 
 #### 🍏 Programmatic Reset (No magnet needed!)
 Instead of using a physical magnet or button to force DFU mode, you can trigger a software restart into the bootloader by toggling the serial port at **1200 baud**.
+
+> **Note:** this only works if the running firmware implements the 1200-baud touch. Stock Zephyr CDC ACM does not, so if the port does not reset, enter DFU mode with the dongle's reset button instead.
 
 #### 🔸 From Raspberry Pi
 1. Install the required tool: `pip install nrfutil`
@@ -86,7 +92,6 @@ Connect your programmer (or Raspberry Pi GPIO pins) to the modules as follows:
 ```text
  Raspberry Pi GPIO                 Target Module (Ebyte / Ezurio)
 +-------------------+             +-------------------------------+
-
 | Pin 1/17 (3.3V)   |------------>| VCC / VDD                     |
 | Pin 6/9/14 (GND)  |------------>| GND                           |
 | Pin 18 (GPIO 24)  |------------>| SWCLK                         |
@@ -98,13 +103,15 @@ Connect your programmer (or Raspberry Pi GPIO pins) to the modules as follows:
 You can turn your Raspberry Pi's native GPIOs into a hardware debugger using **OpenOCD**.
 
 1. Install OpenOCD: `sudo apt update && sudo apt install openocd -y`
-2. Create a flash configuration file named `flash.cfg`:
+   > Mainline OpenOCD has no nRF54L target. For the Ezurio (nRF54L15) use the Windows/`nrfutil` method below, or a Nordic-supported OpenOCD build.
+2. Create a flash configuration file named `flash.cfg` (nRF52840 / Ebyte only):
    ```text
-   adapter driver sysfsgpio
-   sysfsgpio_swd_nums 24 25
+   # Pi 5 and newer kernels: use linuxgpiod (sysfsgpio is deprecated). Pi 5 gpiochip is 4, older Pis use 0.
+   adapter driver linuxgpiod
+   linuxgpiod_gpiochip 0
+   linuxgpiod_swd_nums 24 25   # SWCLK=GPIO24, SWDIO=GPIO25 (verify option names for your OpenOCD version)
    transport select swd
 
-   # Use target/nrf52.cfg for Ebyte or target/nrf54.cfg for Ezurio
    source [find target/nrf52.cfg]
 
    init
@@ -119,15 +126,13 @@ You can turn your Raspberry Pi's native GPIOs into a hardware debugger using **O
 #### 🔸 From Windows (Using a Hardware Debugger)
 To flash these boards from a Windows environment, you need an external hardware tool like a **J-Link**, an **Atmel-ICE**, or an **nRF52/nRF53/nRF54 Development Kit (DK)** used as a debug probe (via the *Debug OUT* header).
 
-1. Install the official [nRF Command Line Tools](https://nordicsemi.com).
+1. Install [nRF Util](https://www.nordicsemi.com/Products/Development-tools/nrf-util) with the `device` command (`nrfjprog` is legacy and does not fully support nRF54L).
 2. Connect your debug probe to the target module's SWD pins and plug the probe into your computer via USB.
 3. Open a Command Prompt or PowerShell terminal and flash the raw `.hex` file:
    ```cmd
-   # For nRF52840 (Ebyte E73)
-   nrfjprog --program zephyr.hex --chiperase --verify --reset
-
-   # For nRF54L15 (Ezurio)
-   nrfjprog --family NRF54L --program zephyr.hex --chiperase --verify --reset
+   # Works for both nRF52840 (Ebyte E73) and nRF54L15 (Ezurio)
+   nrfutil device program --firmware zephyr.hex --options chip_erase_mode=ERASE_ALL,verify=VERIFY_READ --traits jlink
+   nrfutil device reset
    ```
 
 ## 🎛 UART Pin Mapping & Flow Control
@@ -156,10 +161,10 @@ The newer nRF54 architecture addresses ports directly in the Devicetree:
 
 | Signal Direction | Ebyte Pin | Ezurio Pin | Raspberry Pi GPIO Pin | Pi Header Pin |
 | :--- | :--- | :--- | :--- | :--- |
-| **TX out / RX in** | P1.11 (TX) | P2.02 (TX) | GPIO 15 (RXD0) | **Pin 10** |
-| **RX in / TX out** | P1.10 (RX) | P2.00 (RX) | GPIO 14 (TXD0) | **Pin 8** |
-| **RTS out / CTS in**| P1.08 (RTS)| P2.01 (RTS)| GPIO 16 (CTS0) | **Pin 36** |
-| **CTS in / RTS out**| P1.07 (CTS)| P2.03 (CTS)| GPIO 17 (RTS0) | **Pin 11** |
+| **Module TX → Pi RX** | P1.11 (TX) | P2.02 (TX) | GPIO 15 (RXD0) | **Pin 10** |
+| **Module RX ← Pi TX** | P1.10 (RX) | P2.00 (RX) | GPIO 14 (TXD0) | **Pin 8** |
+| **Module RTS → Pi CTS**| P1.08 (RTS)| P2.01 (RTS)| GPIO 16 (CTS0) | **Pin 36** |
+| **Module CTS ← Pi RTS**| P1.07 (CTS)| P2.03 (CTS)| GPIO 17 (RTS0) | **Pin 11** |
 | **Common Ground**  | GND        | GND        | GND            | **Pin 6 / 9 / 14**|
 
 *Note: Always remember to cross the lines! TX goes to RX, and RTS goes to CTS between the Pi and the target module.*
@@ -188,11 +193,5 @@ dtoverlay=uart0-pi5,ctsrts
    otbr-agent -I wpan0 spinel+hdlc+uart:///dev/ttyAMA0?uart-baudrate=115200
 
    # High speed (With Hardware Flow Control active)
-   otbr-agent -I wpan0 spinel+hdlc+uart:///dev/ttyAMA0?uart-baudrate=460800
+   otbr-agent -I wpan0 "spinel+hdlc+uart:///dev/ttyAMA0?uart-baudrate=460800&uart-flow-control"
    ```
-
-
-[![Lint Code](https://github.com/Horticulture-project/ot-ncp/workflows/Lint%20Code%20Base/badge.svg)](https://github.com/marketplace/actions/super-linter)
-[![Build FW for Particle Xenon](https://github.com/Horticulture-project/ot-ncp/workflows/BuildFirmware/badge.svg?step=Build%20FW%20for%20Particle_xenon)](https://github.com/Horticulture-project/Horticulture-LED-fw/actions)
-[![Build FW for E73-Minimal](https://github.com/Horticulture-project/ot-ncp/workflows/BuildFirmware/badge.svg?step=Build%20FW%20for%20E73-Minimal)](https://github.com/Horticulture-project/Horticulture-LED-fw/actions)
-
