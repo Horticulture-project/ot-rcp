@@ -4,6 +4,11 @@ on:
   push:
     branches: [ main, Zephyr-ncp ]
   workflow_dispatch:
+    inputs:
+      release:
+        description: Publish a GitHub release (tag = NCS version + Thread version + OpenThread SHA)
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -16,6 +21,8 @@ jobs:
     defaults:
       run:
         shell: bash  # required so the toolchain environment is loaded
+    outputs:
+      ot_sha: ${{ steps.otrev.outputs.ot_sha }}
     env:
       NCS_VERSION: v3.4.1
 
@@ -92,6 +99,14 @@ jobs:
           west update --narrow -o=--depth=1   # fast no-op when restored from cache
           west zephyr-export
 
+      - name: Get OpenThread revision
+        id: otrev
+        working-directory: ncs
+        run: |
+          SHA=$(west list -f '{sha}' openthread | cut -c1-7)
+          echo "ot_sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "OpenThread revision: $SHA"
+
       - name: Generate UART devicetree overlay
         if: ${{ !matrix.usb }}
         run: |
@@ -129,21 +144,61 @@ jobs:
       - name: Package DFU zip (Holyiot dongle)
         if: ${{ matrix.usb }}
         run: |
+          # The toolchain's nrfutil home is locked, so use a private one for the extra command.
+          export NRFUTIL_HOME="$RUNNER_TEMP/nrfutil-home"
           nrfutil install nrf5sdk-tools
-          nrfutil nrf5sdk-tools pkg generate --hw-version 52 --sd-req 0x00 --sd-id 0x00 \
-            --application ncs/build/*/zephyr/zephyr.hex --application-version 1 \
-            ncs/build/dfu_application.zip
+          nrfutil nrf5sdk-tools pkg generate --hw-version 52 --sd-req 0x00 --sd-id 0x00             --application ncs/build/coprocessor/zephyr/zephyr.hex --application-version 1             ncs/build/dfu_application.zip
 
       - name: Collect artifacts
+        id: collect
         run: |
+          if [ "${{ matrix.usb }}" = "true" ]; then
+            BASE="${{ matrix.name }}-usb"
+          else
+            FLOW=noflow; [ "${{ matrix.flow }}" = "y" ] && FLOW=flow
+            BASE="${{ matrix.name }}-${{ matrix.baud }}baud-$FLOW"
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
           mkdir -p out
-          cp ncs/build/*/zephyr/zephyr.hex ncs/build/*/zephyr/zephyr.bin out/ 2>/dev/null || \
-            cp ncs/build/zephyr/zephyr.hex ncs/build/zephyr/zephyr.bin out/
-          [ -f ncs/build/dfu_application.zip ] && cp ncs/build/dfu_application.zip out/ || true
+          cp ncs/build/coprocessor/zephyr/zephyr.hex "out/rcp-$BASE.hex"
+          cp ncs/build/coprocessor/zephyr/zephyr.bin "out/rcp-$BASE.bin"
+          [ -f ncs/build/dfu_application.zip ] && cp ncs/build/dfu_application.zip "out/rcp-$BASE-dfu.zip" || true
 
       - name: Archive build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rcp-${{ matrix.name }}-${{ matrix.baud }}baud-${{ matrix.flow == 'y' && 'flow' || 'noflow' }}
+          name: rcp-${{ steps.collect.outputs.base }}
           path: out/*
           if-no-files-found: error
+
+  release:
+    needs: build
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.release }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      NCS_VERSION: v3.4.1
+      THREAD_VERSION: "1.4"   # Thread version reported by the OpenThread library
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rcp-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ncs-${{ env.NCS_VERSION }}_thread-${{ env.THREAD_VERSION }}_ot-${{ needs.build.outputs.ot_sha }}
+          name: RCP firmware - NCS ${{ env.NCS_VERSION }} / Thread ${{ env.THREAD_VERSION }} / OpenThread ${{ needs.build.outputs.ot_sha }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            OpenThread Radio Co-Processor (RCP) firmware.
+
+            - nRF Connect SDK: ${{ env.NCS_VERSION }}
+            - Thread version: ${{ env.THREAD_VERSION }}
+            - OpenThread NCS revision: ${{ needs.build.outputs.ot_sha }}
+            - Built from commit ${{ github.sha }}
+          files: dist/*

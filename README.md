@@ -30,8 +30,11 @@ The Host and the RCP communicate over a serial link (UART or USB virtual COM por
 
 Every time you push to the `main` branch or trigger the workflow manually via **Workflow Dispatch**, GitHub Actions compiles the firmware using Nordic's official NCS v3.4.1 Docker environment.
 
+### Releases
+Pushes to `main` (or a manual run with **release** ticked) also publish a GitHub release tagged `ncs-<NCS version>_thread-<Thread version>_ot-<OpenThread SHA>`, for example `ncs-v3.4.1_thread-1.4_ot-0fe68ff`. The OpenThread SHA is read from the NCS workspace; the Thread version is set in the workflow's `THREAD_VERSION`. Re-running with the same versions updates the existing release's files.
+
 ### Output Artifacts
-Each matrix entry uploads its own artifact (`rcp-<module>-<baud>baud-<flow|noflow>`) containing:
+Each matrix entry uploads its own artifact (`rcp-<module>-<baud>baud-<flow|noflow>`, or `rcp-holyiot-nrf52840-dongle-usb`) with files named after it (`.hex`, `.bin`, and `-dfu.zip` for the dongle):
 * `zephyr.hex` / `zephyr.bin` – Raw binaries for hardware programmers (SWD).
 * `dfu_application.zip` – Holyiot dongle only: update package for the USB DFU bootloader (generated with `nrfutil pkg generate`).
 
