@@ -1,0 +1,7 @@
+# downloaded by --install-tools
+/dongle/tools/
+/uart-modules/tools/
+# rcp-update binary copied next to the scripts
+/dongle/rcp-update
+/uart-modules/rcp-update
+__pycache__/

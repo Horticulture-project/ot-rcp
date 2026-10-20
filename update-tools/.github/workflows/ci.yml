@@ -1,0 +1,143 @@
+# CI for update-tools. This file lives inside update-tools/ so that it moves with the directory when it
+# becomes its own repository (then copy it to <repo>/.github/workflows/ and drop the `update-tools/`
+# prefix: working-directory below). NOT run yet: the first run is the real test.
+name: update-tools
+
+on:
+  push:
+    paths: ['update-tools/**']
+  pull_request:
+    paths: ['update-tools/**']
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: update-tools
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: ShellCheck
+        run: |
+          shellcheck --version
+          (cd dongle && shellcheck -x -S style ./*.sh)
+          (cd uart-modules && shellcheck -x -S style ./*.sh)
+      - name: Duplicated files must stay identical (each folder is self-contained)
+        run: |
+          cmp dongle/rcp-common.sh uart-modules/rcp-common.sh
+          cmp dongle/rcp_spinel.py uart-modules/rcp_spinel.py
+
+  rust-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Unit tests
+        run: cargo test --locked --manifest-path rcp-update/Cargo.toml
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path rcp-update/Cargo.toml --all-targets -- -D warnings
+      - name: Build debug binary for the cross-checks
+        run: cargo build --locked --manifest-path rcp-update/Cargo.toml
+      - name: Python fallback produces the same frames as the Rust binary
+        run: |
+          for k in reset-bootloader version; do
+            a="$(rcp-update/target/debug/rcp-update frame "$k")"
+            b="$(python3 -I dongle/rcp_spinel.py frame "$k")"
+            echo "$k: rust='$a' python='$b'"
+            [ "$a" = "$b" ]
+          done
+          [ "$(rcp-update/target/debug/rcp-update frame reset-bootloader)" = "7E 81 01 03 BF BB 7E" ]
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rcp-update-debug-linux-x86_64
+          path: update-tools/rcp-update/target/debug/rcp-update
+
+  dry-run:
+    needs: [shellcheck, rust-test]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: rcp-update-debug-linux-x86_64
+          path: ${{ runner.temp }}/bin
+      - name: Dry-run every board, every variant, python fallback and Rust binary
+        env:
+          TAG: ncs-v3.4.1_thread-1.4_ot-0fe68ff
+        run: |
+          set -eu
+          chmod +x "$RUNNER_TEMP/bin/rcp-update"
+          for tool in python rust; do
+            echo "::group::spinel tool: $tool"
+            args=(--dry-run --spinel-tool "$tool" --rcp-update "$RUNNER_TEMP/bin/rcp-update")
+            # dongle
+            dongle/update-dongle.sh "${args[@]}" --port /dev/ttyACM0 --release "$TAG"
+            dongle/update-dongle.sh "${args[@]}" --port /dev/ttyACM0 --file rcp-holyiot-nrf52840-dongle-usb-dfutouch-dfu.zip
+            dongle/update-dongle.sh "${args[@]}" --port /dev/ttyACM0 --file rcp-holyiot-nrf52840-dongle-usb-dfu.zip --skip-touch
+            dongle/update-dongle.sh "${args[@]}" --port /dev/ttyACM0 --rollback
+            # UART modules, all four release variants
+            for board in e73 nrf54l15; do
+              uart-modules/update-uart-module.sh "${args[@]}" --board "$board" --port /dev/ttyAMA0 --baud 115200 --release "$TAG" --install-tools
+              uart-modules/update-uart-module.sh "${args[@]}" --board "$board" --port /dev/ttyAMA0 --baud 460800 --flow --release "$TAG" --allow-devkey --deep-verify
+              uart-modules/update-uart-module.sh "${args[@]}" --board "$board" --port /dev/ttyAMA0 --file "rcp-x-mcuboot-update.bin" --skip-reset
+              uart-modules/update-uart-module.sh "${args[@]}" --board "$board" --port /dev/ttyAMA0 --rollback
+            done
+            echo "::endgroup::"
+          done
+      - name: Refusals must exit with 2
+        run: |
+          expect2() { set +e; "$@" >/dev/null 2>&1; rc=$?; set -e; [ "$rc" = 2 ] || { echo "expected exit 2, got $rc: $*"; exit 1; }; }
+          expect2 uart-modules/update-uart-module.sh --dry-run --board e73 --port /dev/x --variant plain --file a
+          expect2 uart-modules/update-uart-module.sh --dry-run --board e73 --port /dev/x --file rcp-x-mcuboot-DEVKEY-update.bin
+          expect2 uart-modules/update-uart-module.sh --dry-run --board e73 --file a
+          expect2 dongle/update-dongle.sh --dry-run --port /dev/x --file rcp-holyiot-nrf52840-dongle-usb-dfu.zip
+          expect2 dongle/update-dongle.sh --dry-run --port /dev/x --baud 1200 --release T
+
+  build-static:
+    needs: rust-test
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, name: linux-x86_64 }
+          - { target: aarch64-unknown-linux-musl, name: linux-aarch64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Build static binary
+        run: cross build --locked --release --manifest-path rcp-update/Cargo.toml --target ${{ matrix.target }}
+      - name: Check it is static and has the right architecture
+        run: |
+          f=rcp-update/target/${{ matrix.target }}/release/rcp-update
+          file "$f"
+          file "$f" | grep -Eq 'statically linked|static-pie linked'
+          case "${{ matrix.name }}" in
+            linux-aarch64) file "$f" | grep -q 'ARM aarch64' ;;
+            linux-x86_64) file "$f" | grep -q 'x86-64' ;;
+          esac
+      - name: Run the x86_64 binary
+        if: matrix.name == 'linux-x86_64'
+        run: |
+          rcp-update/target/${{ matrix.target }}/release/rcp-update frame reset-bootloader
+          rcp-update/target/${{ matrix.target }}/release/rcp-update --version
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp rcp-update/target/${{ matrix.target }}/release/rcp-update "dist/rcp-update-${{ matrix.name }}"
+          (cd dist && sha256sum "rcp-update-${{ matrix.name }}" > "rcp-update-${{ matrix.name }}.sha256")
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rcp-update-${{ matrix.name }}
+          path: update-tools/dist/*

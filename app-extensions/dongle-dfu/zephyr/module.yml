@@ -1,0 +1,4 @@
+name: dongle-dfu
+build:
+  cmake: .
+  kconfig: Kconfig

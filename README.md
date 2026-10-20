@@ -34,8 +34,9 @@ Every time you push to the `main` branch or trigger the workflow manually via **
 Pushes to `main` (or a manual run with **release** ticked) also publish a GitHub release tagged `ncs-<NCS version>_thread-<Thread version>_ot-<OpenThread SHA>`, for example `ncs-v3.4.1_thread-1.4_ot-0fe68ff`. The OpenThread SHA is read from the NCS workspace; the Thread version is set in the workflow's `THREAD_VERSION`. Re-running with the same versions updates the existing release's files.
 
 ### Output Artifacts
-Each matrix entry uploads its own artifact (`rcp-<module>-<baud>baud-<flow|noflow>`, or `rcp-holyiot-nrf52840-dongle-usb`) with files named after it (`.hex`, `.bin`, and `-dfu.zip` for the dongle):
+Each matrix entry uploads its own artifact (`rcp-<module>-<baud>baud-<flow|noflow>`, or `rcp-holyiot-nrf52840-dongle-usb`) with files named after it (`.hex`, `.bin`, and `-dfu.zip` for the dongle). Every board also has an update-capable variant with a suffix (`-dfutouch` for the dongle, `-mcuboot` for the UART modules); the plain builds keep their original names and behaviour:
 * `zephyr.hex` / `zephyr.bin` – Raw binaries for hardware programmers (SWD).
+* Ebyte E73 and Ezurio `-mcuboot` builds include MCUboot (serial recovery over the same UART pins): `rcp-<module>-<baud>baud-<flow|noflow>-mcuboot.hex` is the **merged hex (MCUboot + signed application)** for the one-time SWD flash, `...-mcuboot-update.bin` is the signed image for over-the-cable updates and `...-update.bin.sha256` its checksum. No raw `.bin` is published for these variants; the plain builds (no suffix) stay as before. Until a signing secret is configured these are signed with MCUboot's public development key; their file names contain `-DEVKEY` and they must not be shipped. Details: [docss/bootloader_and_update.md](docss/bootloader_and_update.md).
 * `dfu_application.zip` – Holyiot dongle only: update package for the USB DFU bootloader (generated with `nrfutil pkg generate`).
 
 Baud rate and hardware flow control are applied through a generated devicetree overlay (`current-speed` / `hw-flow-control`) on top of the pin overlays in [boards/](boards). RCP mode and the dongle's USB CDC ACM setup come from the NCS `coprocessor` sample itself.
@@ -51,10 +52,10 @@ This device features a pre-flashed USB bootloader. You do **not** need a hardwar
 #### 🍏 Programmatic Reset (No magnet needed!)
 Instead of using a physical magnet or button to force DFU mode, you can trigger a software restart into the bootloader by toggling the serial port at **1200 baud**.
 
-> **Note:** this only works if the running firmware implements the 1200-baud touch. Stock Zephyr CDC ACM does not, so if the port does not reset, enter DFU mode with the dongle's reset button instead.
+> **Note:** the dongle build of this repo includes the 1200-baud touch ([app-extensions/dongle-dfu](app-extensions/dongle-dfu)): opening and closing the CDC port at exactly 1200 baud writes `0xB1` to GPREGRET and reboots into the bootloader (expect `1915:521f` in `lsusb`). This is untested on hardware and assumes the dongle's bootloader is Nordic's USB DFU bootloader; see [docss/bootloader_and_update.md](docss/bootloader_and_update.md). Stock firmware has no touch, and if the port does not reset, enter DFU mode with the dongle's reset button instead.
 
 #### 🔸 From Raspberry Pi
-1. Install the required tool: `pip install nrfutil`
+1. Install [nRF Util](https://www.nordicsemi.com/Products/Development-tools/nrf-util) and its legacy DFU command: `nrfutil install nrf5sdk-tools` (the old `pip install nrfutil` package does not install on current Raspberry Pi OS). For a guided, verified update use the scripts in [update-tools/](update-tools/README.md).
 2. Run the automated deployment sequence:
    ```bash
    # Stop the OTBR daemon to release the port
@@ -65,7 +66,7 @@ Instead of using a physical magnet or button to force DFU mode, you can trigger 
    sleep 2
 
    # Flash the new zip package
-   nrfutil dfu usb-serial -pkg dfu_application.zip -p /dev/ttyACM0 -b 115200
+   nrfutil nrf5sdk-tools dfu usb-serial -pkg rcp-holyiot-nrf52840-dongle-usb-dfutouch-dfu.zip -p /dev/ttyACM0 -b 115200
 
    # Restart the router agent
    sudo systemctl start otbr-agent
@@ -88,6 +89,8 @@ Instead of using a physical magnet or button to force DFU mode, you can trigger 
 ### 2. Ebyte E73 (nRF52840) & Ezurio (nRF54L15) via SWD
 
 These bare modules do not expose a native USB interface for flashing and require direct **Serial Wire Debug (SWD)** connection lines.
+
+> The first flash of a module must use the merged `rcp-<module>-...hex` (it contains MCUboot and puts the application at 0xC000 on the E73 and 0x10000 on the Ezurio). Use a full chip erase. Afterwards updates can go over the UART, see section 3.
 
 #### 📌 Pin Mapping Diagram
 Connect your programmer (or Raspberry Pi GPIO pins) to the modules as follows:
@@ -137,6 +140,20 @@ To flash these boards from a Windows environment, you need an external hardware 
    nrfutil device program --firmware zephyr.hex --options chip_erase_mode=ERASE_ALL,verify=VERIFY_READ --traits jlink
    nrfutil device reset
    ```
+
+### 3. Ebyte E73 & Ezurio: updating over the UART (MCUboot serial recovery)
+
+**Not built or tested on hardware yet.** Outline (full procedure, exact commands, timeouts and failure modes in [docss/bootloader_and_update.md](docss/bootloader_and_update.md), section "HOST CONTRACT"):
+
+1. `sudo systemctl stop otbr-agent`
+2. Send the Spinel reset-to-bootloader frame `7E 81 01 03 BF BB 7E` at the application's baud rate (or `ot-ctl reset bootloader` if your otbr-agent was built with `OT_PLATFORM_BOOTLOADER_MODE=ON`). The module reboots into MCUboot.
+3. MCUboot speaks MCUmgr/SMP at **115200 8N1, no flow control**, regardless of the application's baud rate. Probe with `mcumgr-client -s -d /dev/ttyAMA0 -b 115200 -t 2 echo ping`.
+4. `mcumgr-client -d /dev/ttyAMA0 -t 10 -u 500 --nb-retry 8 upload rcp-<module>-...-update.bin --slot 2`, then `list`, `test <hash>` and `reset`.
+5. `sudo systemctl start otbr-agent` and check `ot-ctl rcp version`.
+
+There is no automatic rollback (the RCP has no MCUmgr server to confirm an image); keep the previous `-update.bin`. Signing keys are generated with `imgtool keygen` and stored as the GitHub secrets `MCUBOOT_SIGN_KEY_ECDSA_P256` (E73) and `MCUBOOT_SIGN_KEY_ED25519` (Ezurio); never commit them.
+
+---
 
 ## 🎛 UART Pin Mapping & Flow Control
 
