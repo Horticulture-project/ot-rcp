@@ -83,6 +83,10 @@ Python `smpmgr` is a quicker alternative if Rust is not a requirement.
 
 ## Research findings (2026-10-20)
 
+### Holyiot dongle: front-end (PA/LNA) configuration (2026-10-21)
+
+The vendor's working NCS 3.1.0 build adds a `generic-fem-two-ctrl-pins` node (`nrf_radio_fem`, CTX P0.24, CRX P0.22, TX gain 22 dB, RX gain 12 dB, settle 1 us), `&radio { fem = <&nrf_radio_fem>; }` and `CONFIG_MPSL_FEM`/`CONFIG_MPSL_FEM_SIMPLE_GPIO`. Our earlier dongle builds lacked it and crashed Raspberry Pi 3 hosts once `otbr-agent` made the radio active (suspected PA left enabled). Now in `boards/nrf52840dongle_nrf52840-fem.{overlay,conf}` and applied to every dongle variant. Unverified until tested on the Pi; if the Kconfig/DT does not build on NCS 3.4.1, build the same on NCS 3.1.0.
+
 ### Holyiot dongle bootloader
 
 **Field evidence (2026-10-21, from the project owner):** an older RCP firmware was flashed to a Holyiot dongle through the

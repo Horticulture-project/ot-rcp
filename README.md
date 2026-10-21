@@ -33,6 +33,9 @@ Every time you push to the `main` branch or trigger the workflow manually via **
 ### Releases
 Pushes to `main` (or a manual run with **release** ticked) also publish a GitHub release tagged `ncs-<NCS version>_thread-<Thread version>_ot-<OpenThread SHA>`, for example `ncs-v3.4.1_thread-1.4_ot-0fe68ff`. The OpenThread SHA is read from the NCS workspace; the Thread version is set in the workflow's `THREAD_VERSION`. Re-running with the same versions updates the existing release's files.
 
+### Holyiot dongle: external PA/LNA front-end
+The Holyiot dongle has an external PA/LNA (RFX4201C-style, two control pins: CTX = P0.24, CRX = P0.22). All dongle builds therefore include [boards/nrf52840dongle_nrf52840-fem.overlay](boards/nrf52840dongle_nrf52840-fem.overlay) and [.conf](boards/nrf52840dongle_nrf52840-fem.conf), taken from the vendor's working NCS 3.1.0 configuration. Without it the radio does not drive the PA pins; an earlier build without it crashed Raspberry Pi 3 hosts once `otbr-agent` started the radio (suspected cause: PA left enabled, high current). These two pins are the stock dongle's UART RX and CTS, so a UART/NCP build on this dongle needs different pins.
+
 ### Output Artifacts
 Each matrix entry uploads its own artifact (`rcp-<module>-<baud>baud-<flow|noflow>`, or `rcp-holyiot-nrf52840-dongle-usb`) with files named after it (`.hex`, `.bin`, and `-dfu.zip` for the dongle). Every board also has an update-capable variant with a suffix (`-dfutouch` for the dongle, `-mcuboot` for the UART modules); the plain builds keep their original names and behaviour:
 * `zephyr.hex` / `zephyr.bin` – Raw binaries for hardware programmers (SWD).

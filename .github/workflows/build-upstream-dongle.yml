@@ -2,6 +2,7 @@ name: Build upstream OpenThread RCP (nRF52840 dongle)
 
 # Reference build of the RCP from OpenThread's own nRF platform (ot-nrf528xx, bare metal, no Zephyr/NCS),
 # for comparison with the NCS-based dongle RCP. Linked for the Nordic USB DFU bootloader (MBR + app at 0x1000).
+# NOTE: this reference build does not configure the dongle's external PA/LNA front-end pins (P0.22/P0.24).
 # Default OpenThread commit = the one reported by the known-good dongle firmware:
 #   thread-reference-20250612-1400-g22b2ec2a8
 

@@ -227,9 +227,13 @@ jobs:
           EXTRA=""
           if [ "${{ matrix.usb }}" != "true" ]; then
             EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
-          elif [ "${{ matrix.touch }}" = "true" ]; then
-            # Dongle "-dfutouch" variant: 1200-baud touch -> USB DFU bootloader (sysbuild image prefix: coprocessor_)
-            EXTRA="-Dcoprocessor_ZEPHYR_EXTRA_MODULES=$GITHUB_WORKSPACE/ot-rcp/app-extensions/dongle-dfu"
+          else
+            # Holyiot dongle: external PA/LNA front-end control (without it the PA pins are not driven)
+            EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.overlay -DEXTRA_CONF_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.conf"
+            if [ "${{ matrix.touch }}" = "true" ]; then
+              # Dongle "-dfutouch" variant: 1200-baud touch -> USB DFU bootloader (sysbuild image prefix: coprocessor_)
+              EXTRA="$EXTRA -Dcoprocessor_ZEPHYR_EXTRA_MODULES=$GITHUB_WORKSPACE/ot-rcp/app-extensions/dongle-dfu"
+            fi
           fi
 
           LAUNCHER=""
