@@ -14,17 +14,17 @@ jobs:
   build:
     # Pinned: ubuntu-latest is migrating to Ubuntu 26
     runs-on: ubuntu-latest
-    # Official NCS toolchain image. `env` is not allowed in container.image, so the tag is
-    # hardcoded; keep it in sync with NCS_VERSION below.
+    # Official NCS toolchain image. `env` is not allowed in container.image, so it uses the matrix
+    # value directly (default v3.4.1; the dongle also has a v3.1.0 variant, see matrix).
     container:
-      image: ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.4.1
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain:${{ matrix.ncs || 'v3.4.1' }}
     defaults:
       run:
         shell: bash  # required so the toolchain environment is loaded
     outputs:
       ot_sha: ${{ steps.otrev.outputs.ot_sha }}
     env:
-      NCS_VERSION: v3.4.1
+      NCS_VERSION: ${{ matrix.ncs || 'v3.4.1' }}
 
     strategy:
       fail-fast: false
@@ -49,6 +49,18 @@ jobs:
             usb: true
             touch: true
             suffix: -dfutouch
+            board_overlay: ''
+            uart: ''
+            baud: 0
+            flow: n
+
+          # Holyiot dongle on NCS v3.1.0: the vendor's known-good configuration was built with 3.1.0.
+          # Fallback/reference if the 3.4.1 build misbehaves on the Pi. Not used for the release tag.
+          - name: holyiot-nrf52840-dongle
+            board: nrf52840dongle/nrf52840
+            usb: true
+            ncs: v3.1.0
+            suffix: -ncs3.1.0
             board_overlay: ''
             uart: ''
             baud: 0
@@ -157,6 +169,7 @@ jobs:
 
       - name: Get OpenThread revision
         id: otrev
+        if: ${{ !matrix.ncs }}   # release naming follows the default NCS version only
         working-directory: ncs
         run: |
           SHA=$(west list -f '{sha}' openthread | cut -c1-7)
@@ -243,6 +256,20 @@ jobs:
           fi
           west build -b ${{ matrix.board }} $APP -d build -p always -- \
             $EXTRA $MCUBOOT_ARGS $LAUNCHER
+
+      - name: Verify dongle front-end and variant configuration
+        if: ${{ matrix.usb }}
+        run: |
+          # Fail the build if the PA/LNA front-end (or the touch module) silently dropped out.
+          CFG=ncs/build/coprocessor/zephyr/.config
+          for o in CONFIG_MPSL_FEM=y CONFIG_MPSL_FEM_SIMPLE_GPIO=y; do
+            grep -qx "$o" "$CFG" || { echo "::error::$o missing from $CFG (dongle FEM not applied)"; exit 1; }
+          done
+          grep -q "nrf_radio_fem" ncs/build/coprocessor/zephyr/zephyr.dts || { echo "::error::nrf_radio_fem node missing"; exit 1; }
+          if [ "${{ matrix.touch }}" = "true" ]; then
+            grep -qx CONFIG_DONGLE_DFU_TOUCH=y "$CFG" || { echo "::error::dongle DFU touch module not in image"; exit 1; }
+          fi
+          grep -E "MPSL_FEM|DONGLE_DFU|OPENTHREAD_COPROCESSOR_RCP" "$CFG" | head
 
       - name: Package DFU zip (Holyiot dongle)
         if: ${{ matrix.usb }}
