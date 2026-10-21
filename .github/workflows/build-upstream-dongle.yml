@@ -1,0 +1,76 @@
+name: Build upstream OpenThread RCP (nRF52840 dongle)
+
+# Reference build of the RCP from OpenThread's own nRF platform (ot-nrf528xx, bare metal, no Zephyr/NCS),
+# for comparison with the NCS-based dongle RCP. Linked for the Nordic USB DFU bootloader (MBR + app at 0x1000).
+# Default OpenThread commit = the one reported by the known-good dongle firmware:
+#   thread-reference-20250612-1400-g22b2ec2a8
+
+on:
+  push:
+    branches: [ test_field_update ]
+    paths: [ '.github/workflows/build-upstream-dongle.yml' ]
+  workflow_dispatch:
+    inputs:
+      openthread_ref:
+        description: OpenThread commit/tag/branch to build
+        default: 22b2ec2a8
+      nrf528xx_ref:
+        description: ot-nrf528xx ref
+        default: main
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      OT_REF: ${{ inputs.openthread_ref || '22b2ec2a8' }}
+      PLATFORM_REF: ${{ inputs.nrf528xx_ref || 'main' }}
+    steps:
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi binutils-arm-none-eabi \
+            libnewlib-arm-none-eabi cmake ninja-build python3 git ccache curl ca-certificates
+
+      - name: Checkout ot-nrf528xx and OpenThread
+        run: |
+          git clone https://github.com/openthread/ot-nrf528xx.git platform
+          cd platform
+          git checkout "$PLATFORM_REF"
+          git submodule update --init openthread
+          cd openthread
+          git fetch origin "$OT_REF" || git fetch --unshallow origin || true
+          git checkout "$OT_REF"
+          git submodule update --init --recursive
+          echo "OpenThread: $(git describe --tags --long 2>/dev/null || git rev-parse --short HEAD)"
+          echo "ot-nrf528xx: $(git -C .. rev-parse --short HEAD)"
+
+      - name: Build RCP (USB CDC ACM, USB bootloader layout)
+        working-directory: platform
+        run: ./script/build nrf52840 USB_trans -DOT_BOOTLOADER=USB
+
+      - name: Convert to hex and check version string
+        working-directory: platform
+        run: |
+          mkdir -p ../out
+          arm-none-eabi-objcopy -O ihex build/bin/ot-rcp ../out/ot-rcp-nrf52840-dongle.hex
+          arm-none-eabi-size build/bin/ot-rcp
+          # Version string the host will see (compare with `ot-ctl rcp version`)
+          strings build/bin/ot-rcp | grep -m3 -E "thread-reference|OPENTHREAD/" || true
+          head -c 200 ../out/ot-rcp-nrf52840-dongle.hex | head -3
+
+      - name: Package for Nordic USB DFU
+        run: |
+          curl -fL -o nrfutil https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/executables/x86_64-unknown-linux-gnu/nrfutil
+          chmod +x nrfutil
+          ./nrfutil install nrf5sdk-tools
+          ./nrfutil nrf5sdk-tools pkg generate --hw-version 52 --sd-req 0x00 --sd-id 0x00 \
+            --application out/ot-rcp-nrf52840-dongle.hex --application-version 1 \
+            out/ot-rcp-nrf52840-dongle-dfu.zip
+          (cd out && sha256sum *.hex *.zip > SHA256SUMS)
+
+      - name: Archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: upstream-rcp-nrf52840-dongle-${{ env.OT_REF }}
+          path: out/*
+          if-no-files-found: error

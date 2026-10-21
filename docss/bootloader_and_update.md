@@ -85,6 +85,13 @@ Python `smpmgr` is a quicker alternative if Rust is not a requirement.
 
 ### Holyiot dongle bootloader
 
+**Field evidence (2026-10-21, from the project owner):** an older RCP firmware was flashed to a Holyiot dongle through the
+pre-flashed Nordic bootloader, with no SWD/SWC programmer involved. So the dongle ships with a working USB DFU bootloader,
+almost certainly Nordic's. Still unconfirmed: the DFU USB ID (`1915:521f` expected), and whether it honours the
+`GPREGRET = 0xB1` entry used by the touch module. That older firmware reports
+`thread-reference-20250612-1400-g22b2ec2a8; NRF52840; Aug 15 2026 01:11:15` (upstream OpenThread commit from 2026-08-08,
+platform tag typical of OpenThread's own nRF platform rather than Zephyr), i.e. it is not an NCS release build.
+
 - No official Holyiot page or schematic with bootloader details was found (the vendor manual page returned HTTP 403). The
   Holyiot-21017 third-party manual describes updating via nRF Connect for Desktop (Programmer) over USB DFU, which is the
   Nordic DFU flow, not UF2 or a drive-style bootloader.
