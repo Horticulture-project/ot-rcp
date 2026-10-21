@@ -85,7 +85,7 @@ Python `smpmgr` is a quicker alternative if Rust is not a requirement.
 
 ### Holyiot dongle: front-end (PA/LNA) configuration (2026-10-21)
 
-The vendor's working NCS 3.1.0 build adds a `generic-fem-two-ctrl-pins` node (`nrf_radio_fem`, CTX P0.24, CRX P0.22, TX gain 22 dB, RX gain 12 dB, settle 1 us), `&radio { fem = <&nrf_radio_fem>; }` and `CONFIG_MPSL_FEM`/`CONFIG_MPSL_FEM_SIMPLE_GPIO`. Our earlier dongle builds lacked it and crashed Raspberry Pi 3 hosts once `otbr-agent` made the radio active (suspected PA left enabled). Now in `boards/nrf52840dongle_nrf52840-fem.{overlay,conf}` and applied to every dongle variant. Unverified until tested on the Pi; if the Kconfig/DT does not build on NCS 3.4.1, build the same on NCS 3.1.0.
+The vendor's working NCS 3.1.0 build adds a `generic-fem-two-ctrl-pins` node (`nrf_radio_fem`, CTX P0.24, CRX P0.22, TX gain 22 dB, RX gain 12 dB, settle 1 us), `&radio { fem = <&nrf_radio_fem>; }` and `CONFIG_MPSL_FEM`/`CONFIG_MPSL_FEM_SIMPLE_GPIO`. Our earlier dongle builds lacked it and crashed Raspberry Pi 3 hosts once `otbr-agent` made the radio active (suspected PA left enabled). Now in `boards/nrf52840dongle_nrf52840-fem.{overlay,conf}` and applied to every dongle variant. Found by CI on 2026-10-21: NCS 3.4.1 renamed the compatible to `radio-fem-two-ctrl-pins` (3.1.0: `generic-fem-two-ctrl-pins`). With the old name the FEM was silently not applied (build passed, `MPSL_FEM_SIMPLE_GPIO` unset), so the build now has a CI check for it and the NCS 3.1.0 variant uses its own overlay. Unverified on the Pi.
 
 ### Holyiot dongle bootloader
 

@@ -242,7 +242,10 @@ jobs:
             EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
           else
             # Holyiot dongle: external PA/LNA front-end control (without it the PA pins are not driven)
-            EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.overlay -DEXTRA_CONF_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.conf"
+            # NCS 3.4 renamed the FEM compatible, so the NCS 3.1.0 variant uses its own overlay.
+            FEM_OVERLAY=nrf52840dongle_nrf52840-fem.overlay
+            [ "${{ matrix.ncs }}" = "v3.1.0" ] && FEM_OVERLAY=nrf52840dongle_nrf52840-fem-ncs3.1.overlay
+            EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/$FEM_OVERLAY -DEXTRA_CONF_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.conf"
             if [ "${{ matrix.touch }}" = "true" ]; then
               # Dongle "-dfutouch" variant: 1200-baud touch -> USB DFU bootloader (sysbuild image prefix: coprocessor_)
               EXTRA="$EXTRA -Dcoprocessor_ZEPHYR_EXTRA_MODULES=$GITHUB_WORKSPACE/ot-rcp/app-extensions/dongle-dfu"
