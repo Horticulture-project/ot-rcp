@@ -87,6 +87,16 @@ Python `smpmgr` is a quicker alternative if Rust is not a requirement.
 
 The vendor's working NCS 3.1.0 build adds a `generic-fem-two-ctrl-pins` node (`nrf_radio_fem`, CTX P0.24, CRX P0.22, TX gain 22 dB, RX gain 12 dB, settle 1 us), `&radio { fem = <&nrf_radio_fem>; }` and `CONFIG_MPSL_FEM`/`CONFIG_MPSL_FEM_SIMPLE_GPIO`. Our earlier dongle builds lacked it and crashed Raspberry Pi 3 hosts once `otbr-agent` made the radio active (suspected PA left enabled). Now in `boards/nrf52840dongle_nrf52840-fem.{overlay,conf}` and applied to every dongle variant. Found by CI on 2026-10-21: NCS 3.4.1 renamed the compatible to `radio-fem-two-ctrl-pins` (3.1.0: `generic-fem-two-ctrl-pins`). With the old name the FEM was silently not applied (build passed, `MPSL_FEM_SIMPLE_GPIO` unset), so the build now has a CI check for it and the NCS 3.1.0 variant uses its own overlay. Unverified on the Pi.
 
+### Dongle crash bisect (2026-10-22)
+
+Result so far: with the same front-end config, the NCS 3.1.0 build runs fine on the Pi 3 and the NCS 3.4.1 build hangs it
+as soon as `otbr-agent` starts the radio. Differences found in the NCS sources: (1) the sample's dongle config uses the
+legacy USB stack up to NCS 3.2.x and `USB_DEVICE_STACK_NEXT` from 3.3.0; (2) the OpenThread revision is identical in
+3.1.0-3.3.4 (`ncs-thread-reference-20250402`) and changes in 3.4.0 (`0fe68ff`); (3) the front-end compatible was renamed in
+3.3.0. CI builds `-ncs3.2.2` (legacy USB, same OT), `-ncs3.3.4` (new USB, same OT) and `-legacyusb` (3.4.1 with the legacy
+stack). Reading: 3.2.2 ok + 3.3.4 hangs => new USB stack; 3.3.4 ok => the 3.4 OpenThread/other changes; `-legacyusb` ok
+=> USB stack confirmed on 3.4.1.
+
 ### Holyiot dongle bootloader
 
 **Field evidence (2026-10-21, from the project owner):** an older RCP firmware was flashed to a Holyiot dongle through the
