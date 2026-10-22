@@ -86,6 +86,17 @@ jobs:
             uart: ''
             baud: 0
             flow: n
+          # NCS 3.4.1 with the legacy USB stack (experiment; copies the sample with the legacy board conf)
+          - name: holyiot-nrf52840-dongle
+            board: nrf52840dongle/nrf52840
+            usb: true
+            legacyusb: true
+            suffix: -legacyusb
+            board_overlay: ''
+            uart: ''
+            baud: 0
+            flow: n
+
           # Ebyte E73 (nRF52840); MCUboot variants are signed with ECDSA P-256.
           - name: ebyte-e73-nrf52840
             board: nrf52840dk/nrf52840
@@ -255,6 +266,13 @@ jobs:
         working-directory: ncs
         run: |
           APP=nrf/samples/openthread/coprocessor
+          if [ "${{ matrix.legacyusb }}" = "true" ]; then
+            # Copy the sample and swap in the legacy-USB board conf (the sample's own one selects USB_DEVICE_STACK_NEXT).
+            cp -r "$APP" "$RUNNER_TEMP/coprocessor-legacyusb"
+            cp "$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-legacyusb.conf" \
+               "$RUNNER_TEMP/coprocessor-legacyusb/boards/nrf52840dongle_nrf52840.conf"
+            APP="$RUNNER_TEMP/coprocessor-legacyusb"
+          fi
           # The sample's prj.conf already selects RCP, and the dongle's USB CDC ACM config
           # comes from the sample's boards/nrf52840dongle_nrf52840.conf.
           EXTRA=""
@@ -284,8 +302,10 @@ jobs:
           set -e
           if [ "$RC" -ne 0 ]; then
             # Surface the interesting lines as annotations (readable without log access).
-            grep -E "error|Error|ERROR|assigned the value|undefined|No such|not found|CMake Error" "$RUNNER_TEMP/build.log" \
-              | head -15 | while IFS= read -r l; do echo "::error::${l:0:380}"; done
+            # Linker problems first (GitHub shows at most 10 annotations per step), then the rest.
+            { grep -E "undefined reference|multiple definition|cannot find|overflowed|will not fit" "$RUNNER_TEMP/build.log" | sort -u | head -7
+              grep -E "CMake Error|Kconfig|assigned the value|fatal error|error:" "$RUNNER_TEMP/build.log" | grep -v "collect2" | head -3
+            } | while IFS= read -r l; do echo "::error::${l:0:380}"; done
             exit "$RC"
           fi
 
