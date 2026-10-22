@@ -294,8 +294,17 @@ jobs:
             export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
             LAUNCHER="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
           fi
+          set +e
           west build -b ${{ matrix.board }} $APP -d build -p always -- \
-            $EXTRA $MCUBOOT_ARGS $LAUNCHER
+            $EXTRA $MCUBOOT_ARGS $LAUNCHER 2>&1 | tee "$RUNNER_TEMP/build.log"
+          RC=${PIPESTATUS[0]}
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            # Surface the interesting lines as annotations (readable without log access).
+            grep -E "error|Error|ERROR|assigned the value|undefined|No such|not found|CMake Error" "$RUNNER_TEMP/build.log" \
+              | head -15 | while IFS= read -r l; do echo "::error::${l:0:380}"; done
+            exit "$RC"
+          fi
 
       - name: Verify dongle front-end and variant configuration
         if: ${{ matrix.usb }}
