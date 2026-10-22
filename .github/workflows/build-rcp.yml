@@ -268,10 +268,12 @@ jobs:
           APP=nrf/samples/openthread/coprocessor
           if [ "${{ matrix.legacyusb }}" = "true" ]; then
             # Copy the sample and swap in the legacy-USB board conf (the sample's own one selects USB_DEVICE_STACK_NEXT).
-            cp -r "$APP" "$RUNNER_TEMP/coprocessor-legacyusb"
+            # The folder must stay named "coprocessor": sysbuild names the image (build/coprocessor/...) after it.
+            mkdir -p "$RUNNER_TEMP/legacyusb"
+            cp -r "$APP" "$RUNNER_TEMP/legacyusb/coprocessor"
             cp "$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-legacyusb.conf" \
-               "$RUNNER_TEMP/coprocessor-legacyusb/boards/nrf52840dongle_nrf52840.conf"
-            APP="$RUNNER_TEMP/coprocessor-legacyusb"
+               "$RUNNER_TEMP/legacyusb/coprocessor/boards/nrf52840dongle_nrf52840.conf"
+            APP="$RUNNER_TEMP/legacyusb/coprocessor"
           fi
           # The sample's prj.conf already selects RCP, and the dongle's USB CDC ACM config
           # comes from the sample's boards/nrf52840dongle_nrf52840.conf.
