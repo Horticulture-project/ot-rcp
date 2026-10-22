@@ -93,9 +93,9 @@ Result so far: with the same front-end config, the NCS 3.1.0 build runs fine on 
 as soon as `otbr-agent` starts the radio. Differences found in the NCS sources: (1) the sample's dongle config uses the
 legacy USB stack up to NCS 3.2.x and `USB_DEVICE_STACK_NEXT` from 3.3.0; (2) the OpenThread revision is identical in
 3.1.0-3.3.4 (`ncs-thread-reference-20250402`) and changes in 3.4.0 (`0fe68ff`); (3) the front-end compatible was renamed in
-3.3.0. CI builds `-ncs3.2.2` (legacy USB, same OT), `-ncs3.3.4` (new USB, same OT) and `-legacyusb` (3.4.1 with the legacy
-stack). Reading: 3.2.2 ok + 3.3.4 hangs => new USB stack; 3.3.4 ok => the 3.4 OpenThread/other changes; `-legacyusb` ok
-=> USB stack confirmed on 3.4.1.
+3.3.0. CI builds `-ncs3.2.2` (legacy USB, same OT) and `-ncs3.3.4` (new USB, same OT). Reading: 3.2.2 ok + 3.3.4 hangs => new
+USB stack; 3.3.4 ok => the 3.4 OpenThread/other changes. A third experiment, NCS 3.4.1 with the legacy USB stack
+(`CONFIG_USB_DEVICE_STACK`), was tried and does not link on 3.4.1 (`ld returned 1 exit status`), so it was dropped.
 
 ### Holyiot dongle bootloader
 
