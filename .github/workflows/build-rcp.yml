@@ -269,6 +269,10 @@ jobs:
           done
           grep -q "nrf_radio_fem" ncs/build/coprocessor/zephyr/zephyr.dts || { echo "::error::nrf_radio_fem node missing"; exit 1; }
           grep -qx CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y "$CFG" || { echo "::error::USB_DEVICE_INITIALIZE_AT_BOOT missing (dongle would not enumerate)"; exit 1; }
+          # uart0 shares P0.24/P0.22 with the FEM CTX/CRX pins; it must be disabled or the PA/LNA never switch.
+          UART0_STATUS=$(awk '/uart0: uart@/{f=1} f&&/status =/{print; exit}' ncs/build/coprocessor/zephyr/zephyr.dts)
+          echo "uart0: $UART0_STATUS"
+          echo "$UART0_STATUS" | grep -q '"disabled"' || { echo "::error::uart0 is not disabled; it owns the FEM pins P0.22/P0.24 (weak RX/TX)"; exit 1; }
           grep -E "MPSL_FEM|USB_DEVICE_STACK|USB_DEVICE_INITIALIZE|OPENTHREAD_COPROCESSOR_RCP" "$CFG" | head
 
       - name: Package DFU zip (Holyiot dongle)

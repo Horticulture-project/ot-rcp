@@ -23,3 +23,13 @@
 &radio {
 	fem = <&nrf_radio_fem>;
 };
+
+/*
+ * The stock dongle board enables uart0 with RX on P0.24 and CTS on P0.22 (pull-ups) - the same pins as
+ * CTX/CRX above. While the UART owns them, the FEM driver cannot switch the PA/LNA: received signals
+ * arrive ~-100 dBm at 1 m and energy scans read a flat value on every channel. The vendor's working
+ * config disables uart0 for this reason. Nothing else uses uart0 here (console/shell are not on it).
+ */
+&uart0 {
+	status = "disabled";
+};

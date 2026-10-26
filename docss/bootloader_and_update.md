@@ -104,6 +104,20 @@ platform calls `usb_enable()`, so without it the dongle never enumerates (first 
 With both, the dongle enumerates and the Pi reports `RCP-firmware 0fe68ff; Zephyr; Oct 26 2026 08:41:29`. CI checks the
 option in the final `.config`. The other dongle variants (plain, `-dfutouch`, `-ncs3.x`) are no longer built.
 
+### Holyiot dongle: weak RX traced to uart0 owning the FEM pins (2026-10-26)
+
+Symptom on the NCS 3.4.1 legacy-USB build: a SmartThings hub 1 m away was heard at about -100 dBm and `ot-ctl scan energy`
+returned a flat -92 dBm on all channels; the pre-project vendor firmware received normally on the same dongle. Cause: the
+stock dongle board enables `uart0` with RX on P0.24 and CTS on P0.22 (pull-ups), the same pins as the FEM CTX/CRX, so the
+UART owns them and the FEM driver cannot switch the PA/LNA. The vendor's config comments out `uart0` for this reason (their
+email: "I have to disable UART"). Fix: `&uart0 { status = "disabled"; };` in the FEM overlays, with a CI check on the final
+devicetree. Unverified on hardware until re-tested.
+
+TX power with the FEM (NCS radio driver): the requested power is power on air; the driver subtracts `tx-gain-db` (22) and
+rounds the nRF52840 level down to the nearest supported step (+8..+2, 0, -4, -8, -12, -16, -20, -40 dBm). So the default
+`CONFIG_OPENTHREAD_DEFAULT_TX_POWER=0` gives about -18 dBm on air; `txpower 16` gives about 14 dBm. `ot-ctl txpower`
+shows the requested value, not the achieved one.
+
 ### Holyiot dongle bootloader
 
 **Field evidence (2026-10-21, from the project owner):** an older RCP firmware was flashed to a Holyiot dongle through the
