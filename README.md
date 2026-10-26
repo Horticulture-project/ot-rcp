@@ -36,6 +36,22 @@ Pushes to `main` (or a manual run with **release** ticked) also publish a GitHub
 ### Holyiot dongle: external PA/LNA front-end
 The Holyiot dongle has an external PA/LNA (RFX4201C-style, two control pins: CTX = P0.24, CRX = P0.22). All dongle builds therefore include [boards/nrf52840dongle_nrf52840-fem.overlay](boards/nrf52840dongle_nrf52840-fem.overlay) and [.conf](boards/nrf52840dongle_nrf52840-fem.conf), taken from the vendor's working NCS 3.1.0 configuration. Without it the radio does not drive the PA pins; an earlier build without it crashed Raspberry Pi 3 hosts once `otbr-agent` started the radio (suspected cause: PA left enabled, high current). These two pins are the stock dongle's UART RX and CTS, so a UART/NCP build on this dongle needs different pins.
 
+The stock dongle board also enables `uart0` on those same two pins (RX P0.24, CTS P0.22); while the UART owns them the
+PA/LNA never switch (symptom: a device 1 m away heard at about -100 dBm, flat -92 dBm energy scan). The FEM overlay
+therefore disables `uart0`, and CI fails the build if it is not disabled. Verified on 2026-10-26: after the fix the
+same device is heard at -41 dBm.
+
+**TX power with the FEM:** a requested TX power means power on air. The radio driver subtracts the PA gain (22 dB) and
+rounds the nRF52840 output *down* to its next supported step, so the achieved power is roughly:
+
+| Requested (dBm) | 0 | 2–5 | 6–9 | 10–13 | 14–17 | 18–21 | 22 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| On air (dBm) | -18 | 2 | 6 | 10 | 14 | 18 | 22 |
+
+The firmware default (`CONFIG_OPENTHREAD_DEFAULT_TX_POWER=0`) therefore gives only about -18 dBm; set it on the host,
+e.g. `sudo ot-ctl txpower 16` (about 14 dBm). `ot-ctl txpower` shows the requested value, not the achieved one. Mind the
+regulatory limit (EU 2.4 GHz: 20 dBm EIRP, i.e. including antenna gain).
+
 ### Holyiot dongle: legacy USB stack
 The dongle is built on NCS v3.4.1 with the *legacy* USB device stack ([boards/nrf52840dongle_nrf52840-legacyusb.conf](boards/nrf52840dongle_nrf52840-legacyusb.conf)), because the sample's new stack (`USB_DEVICE_STACK_NEXT`) hung Raspberry Pi 3 hosts. The legacy stack only starts when `CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y`; without it nothing calls `usb_enable()` and the dongle never appears as a USB device. CI fails the dongle build if that option is missing.
 
@@ -55,28 +71,40 @@ Baud rate and hardware flow control are applied through a generated devicetree o
 
 This device features a pre-flashed USB bootloader. You do **not** need a hardware programmer.
 
-#### 🍏 Programmatic Reset (No magnet needed!)
-Instead of using a physical magnet or button to force DFU mode, you can trigger a software restart into the bootloader by toggling the serial port at **1200 baud**.
+#### 🍏 Software entry into the bootloader (no button needed)
+The firmware supports the Spinel **reset-to-bootloader** command: the RCP pulls its own reset pin (P0.19) and comes up
+in Nordic's USB DFU bootloader (`lsusb`: `1915:521f Nordic Semiconductor ASA Open DFU Bootloader`). Verified on the
+Holyiot dongle on 2026-10-26. The reset button still works as a fallback.
 
-> **Note:** the 1200-baud touch ([app-extensions/dongle-dfu](app-extensions/dongle-dfu)) is **not** part of the CI dongle build any more (only the `-legacyusb` build is published); if you add the module back, opening and closing the CDC port at exactly 1200 baud writes `0xB1` to GPREGRET and reboots into the bootloader (expect `1915:521f` in `lsusb`). This is untested on hardware and assumes the dongle's bootloader is Nordic's USB DFU bootloader; see [docss/bootloader_and_update.md](docss/bootloader_and_update.md). Stock firmware has no touch, and if the port does not reset, enter DFU mode with the dongle's reset button instead.
+> The older 1200-baud "touch" ([app-extensions/dongle-dfu](app-extensions/dongle-dfu)) is not in the published dongle
+> build; it is not needed any more.
 
 #### 🔸 From Raspberry Pi
-1. Install [nRF Util](https://www.nordicsemi.com/Products/Development-tools/nrf-util) and its legacy DFU command: `nrfutil install nrf5sdk-tools` (the old `pip install nrfutil` package does not install on current Raspberry Pi OS). For a guided, verified update use the scripts in [update-tools/](update-tools/README.md).
-2. Run the automated deployment sequence:
+1. Install [nRF Util](https://www.nordicsemi.com/Products/Development-tools/nrf-util) and its `device` command. On a
+   64-bit Pi (`uname -m` = `aarch64`) this is the only option: Nordic does not publish `nrf5sdk-tools` for 64-bit ARM
+   Linux, and there is no nRF Util build at all for a 32-bit (armv7) OS.
    ```bash
-   # Stop the OTBR daemon to release the port
+   curl -fL -o nrfutil https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/executables/aarch64-unknown-linux-gnu/nrfutil
+   chmod +x nrfutil && sudo mv nrfutil /usr/local/bin/
+   nrfutil install device
+   ```
+2. Update (the guided script [update-tools/dongle/update-dongle.sh](update-tools/dongle/README.md) does the same and
+   verifies the radio afterwards):
+   ```bash
    sudo systemctl stop otbr-agent
 
-   # Trigger DFU mode via 1200 baud trick
-   python3 -c "import serial; serial.Serial('/dev/ttyACM0', 1200).close()"
-   sleep 2
+   # Spinel reset-to-bootloader (USB CDC ignores the baud value)
+   python3 update-tools/dongle/rcp_spinel.py reset-bootloader --port /dev/ttyACM0 --baud 115200
+   nrfutil device list        # note the serial number of the "Open DFU Bootloader"
 
-   # Flash the new zip package
-   nrfutil nrf5sdk-tools dfu usb-serial -pkg rcp-holyiot-nrf52840-dongle-usb-legacyusb-dfu.zip -p /dev/ttyACM0 -b 115200
+   nrfutil device program --serial-number <SN> --traits nordicDfu \
+     --firmware rcp-holyiot-nrf52840-dongle-usb-legacyusb-dfu.zip
 
-   # Restart the router agent
    sudo systemctl start otbr-agent
+   sudo ot-ctl rcp version    # new build date
+   sudo ot-ctl txpower 16     # re-apply if needed (see TX power note below)
    ```
+   On x86-64 Linux `nrfutil nrf5sdk-tools dfu usb-serial -pkg <zip> -p <tty> -b 115200` works as well.
 
 #### 🔸 From Windows
 1. Download and install [nRF Connect for Desktop](https://nordicsemi.com).

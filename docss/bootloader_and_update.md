@@ -111,7 +111,8 @@ returned a flat -92 dBm on all channels; the pre-project vendor firmware receive
 stock dongle board enables `uart0` with RX on P0.24 and CTS on P0.22 (pull-ups), the same pins as the FEM CTX/CRX, so the
 UART owns them and the FEM driver cannot switch the PA/LNA. The vendor's config comments out `uart0` for this reason (their
 email: "I have to disable UART"). Fix: `&uart0 { status = "disabled"; };` in the FEM overlays, with a CI check on the final
-devicetree. Unverified on hardware until re-tested.
+devicetree. **Verified on hardware (2026-10-26):** after the fix `ot-ctl discover` hears the SmartThings hub at
+1 m at -41 dBm (was about -100 dBm) and the energy scan varies per channel again.
 
 TX power with the FEM (NCS radio driver): the requested power is power on air; the driver subtracts `tx-gain-db` (22) and
 rounds the nRF52840 level down to the nearest supported step (+8..+2, 0, -4, -8, -12, -16, -20, -40 dBm). So the default

@@ -78,8 +78,9 @@ jobs:
             args=(--dry-run --spinel-tool "$tool" --rcp-update "$RUNNER_TEMP/bin/rcp-update")
             # dongle
             dongle/update-dongle.sh "${args[@]}" --port /dev/ttyACM0 --release "$TAG"
-            dongle/update-dongle.sh "${args[@]}" --port /dev/ttyACM0 --file rcp-holyiot-nrf52840-dongle-usb-dfutouch-dfu.zip
-            dongle/update-dongle.sh "${args[@]}" --port /dev/ttyACM0 --file rcp-holyiot-nrf52840-dongle-usb-dfu.zip --skip-touch
+            dongle/update-dongle.sh "${args[@]}" --port /dev/ttyACM0 --file rcp-holyiot-nrf52840-dongle-usb-legacyusb-dfu.zip
+            dongle/update-dongle.sh "${args[@]}" --port /dev/ttyACM0 --file rcp-holyiot-nrf52840-dongle-usb-legacyusb-dfu.zip --skip-entry --dfu-serial F8BE95E3118D
+            dongle/update-dongle.sh "${args[@]}" --port /dev/ttyACM0 --file rcp-holyiot-nrf52840-dongle-usb-dfutouch-dfu.zip --entry touch
             dongle/update-dongle.sh "${args[@]}" --port /dev/ttyACM0 --rollback
             # UART modules, all four release variants
             for board in e73 nrf54l15; do
@@ -96,7 +97,8 @@ jobs:
           expect2 uart-modules/update-uart-module.sh --dry-run --board e73 --port /dev/x --variant plain --file a
           expect2 uart-modules/update-uart-module.sh --dry-run --board e73 --port /dev/x --file rcp-x-mcuboot-DEVKEY-update.bin
           expect2 uart-modules/update-uart-module.sh --dry-run --board e73 --file a
-          expect2 dongle/update-dongle.sh --dry-run --port /dev/x --file rcp-holyiot-nrf52840-dongle-usb-dfu.zip
+          expect2 dongle/update-dongle.sh --dry-run --port /dev/x --file a-dfu.zip --entry bogus
+          expect2 dongle/update-dongle.sh --dry-run --port /dev/x --release T --variant bogus
           expect2 dongle/update-dongle.sh --dry-run --port /dev/x --baud 1200 --release T
 
   build-static:

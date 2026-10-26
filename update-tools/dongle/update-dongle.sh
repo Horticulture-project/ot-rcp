@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # update-dongle.sh - update the RCP firmware of the Holyiot nRF52840 USB dongle from a
-# Raspberry Pi: 1200-baud touch -> USB DFU bootloader -> nrfutil -> wait for the radio.
+# Raspberry Pi: Spinel reset-to-bootloader -> Nordic USB DFU bootloader -> nrfutil -> wait for the radio.
 #
-# NOT verified on hardware. Works only with the "-dfutouch" firmware variant (it contains the
-# 1200-baud touch module); a plain build needs the reset button (use --skip-touch).
+# Verified on hardware (2026-10-26, manually, step by step): rcp_spinel.py reset-bootloader puts the
+# dongle into the bootloader (1915:521f), and 'nrfutil device program --traits nordicDfu' flashes the
+# -legacyusb DFU zip. The script as a whole has not been run end to end on hardware yet.
+# Bootloader entry: --entry reset (default, any current build), --entry touch (only builds with the
+# 1200-baud touch module, i.e. -dfutouch), or --skip-entry when the dongle is already in the bootloader.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,7 +20,9 @@ PORT=""
 FILE=""
 RELEASE=""
 REPO="$DEFAULT_REPO"
-VARIANT="dfutouch"
+VARIANT="legacyusb"
+ENTRY="reset"
+DFU_SERIAL=""
 BAUD=460800
 FLOW=0
 APP_VIDPID="1915:0000"
@@ -37,22 +42,28 @@ Usage: update-dongle.sh --port PORT (--file dfu.zip | --release TAG | --rollback
 Required
   --port PATH         CDC ACM port of the dongle in application mode (the Spinel port that
                       otbr-agent uses), e.g. /dev/serial/by-id/usb-...-if00. Nothing else is touched.
-  --file ZIP          DFU package, e.g. rcp-holyiot-nrf52840-dongle-usb-dfutouch-dfu.zip
+  --file ZIP          DFU package, e.g. rcp-holyiot-nrf52840-dongle-usb-legacyusb-dfu.zip
   --release TAG       download the package from the GitHub release TAG
                       (e.g. ncs-v3.4.1_thread-1.4_ot-0fe68ff)
   --rollback          flash the previous known good package kept by this script
 
 Options
   --repo OWNER/REPO   GitHub repository for --release (default Horticulture-project/ot-rcp)
-  --variant V         dfutouch (default; supports the 1200-baud touch) or plain
-                      (plain builds cannot be touched: needs --skip-touch)
-  --baud N            baud used to talk Spinel to the app (default 460800; CDC ignores it, must not be 1200)
+  --variant V         asset for --release: legacyusb (default; the build CI publishes), dfutouch or plain
+  --entry E           how to enter the bootloader: reset (default; Spinel reset-to-bootloader, works
+                      with every current build) or touch (1200-baud touch, only -dfutouch builds)
+  --baud N            baud used to talk Spinel to the app (default 460800; USB CDC ignores the value, but it
+                      must not be 1200)
   --flow              accepted for symmetry with the UART script; no effect on USB
-  --skip-touch        the dongle is already in DFU mode (reset button), skip the 1200-baud touch
+  --skip-entry        the dongle is already in the bootloader (Spinel reset or reset button); alias --skip-touch
   --dfu-port PATH     use this tty for DFU instead of searching for the bootloader's VID:PID
   --app-vid-pid V:P   application USB id (default 1915:0000)
   --dfu-vid-pid V:P   bootloader USB id (default 1915:521f, assumed from Nordic's dongle: verify)
-  --nrfutil PATH      nrfutil binary (default: nrfutil from PATH)
+  --nrfutil PATH      nrfutil binary (default: nrfutil from PATH). Uses, in this order:
+                      'nrfutil nrf5sdk-tools dfu usb-serial' (x86-64 only), 'nrfutil device program'
+                      (64-bit ARM: install with 'nrfutil install device'), legacy 'nrfutil dfu usb-serial'
+  --dfu-serial SN     serial number of the dongle in the bootloader, for 'nrfutil device' (default: the
+                      only 'Open DFU Bootloader' in 'nrfutil device list')
   --rcp-update PATH   Rust helper binary (default: ./rcp-update, then PATH); python3 + rcp_spinel.py otherwise
   --spinel-tool T     auto (default) | rust | python
   --service NAME      systemd unit to stop/start (default otbr-agent)
@@ -75,7 +86,9 @@ while [ $# -gt 0 ]; do
         --variant) VARIANT="${2:?--variant needs a value}"; shift 2 ;;
         --baud) BAUD="${2:?--baud needs a value}"; shift 2 ;;
         --flow) FLOW=1; shift ;;
-        --skip-touch) SKIP_TOUCH=1; shift ;;
+        --skip-touch | --skip-entry) SKIP_TOUCH=1; shift ;;
+        --entry) ENTRY="${2:?--entry needs a value}"; shift 2 ;;
+        --dfu-serial) DFU_SERIAL="${2:?--dfu-serial needs a value}"; shift 2 ;;
         --dfu-port) DFU_PORT="${2:?--dfu-port needs a value}"; shift 2 ;;
         --app-vid-pid) APP_VIDPID="${2:?}"; shift 2 ;;
         --dfu-vid-pid) DFU_VIDPID="${2:?}"; shift 2 ;;
@@ -101,20 +114,18 @@ n=0
 [ "$n" = 1 ] || { usage >&2; die "$EX_USAGE" "give exactly one of --file, --release, --rollback"; }
 is_uint "$BAUD" || die "$EX_USAGE" "--baud must be a number"
 [ "$BAUD" != 1200 ] || die "$EX_USAGE" "--baud 1200 would reboot the dongle into DFU; use another rate"
-case "$VARIANT" in dfutouch | plain) ;; *) die "$EX_USAGE" "--variant must be dfutouch or plain" ;; esac
+case "$VARIANT" in legacyusb | dfutouch | plain) ;; *) die "$EX_USAGE" "--variant must be legacyusb, dfutouch or plain" ;; esac
+case "$ENTRY" in reset | touch) ;; *) die "$EX_USAGE" "--entry must be reset or touch" ;; esac
 case "$SPINEL_PREF" in auto | rust | python) ;; *) die "$EX_USAGE" "--spinel-tool must be auto, rust or python" ;; esac
 case "$REPO" in */*) ;; *) die "$EX_USAGE" "--repo must look like OWNER/REPO" ;; esac
-if [ "$VARIANT" = plain ] && [ "$SKIP_TOUCH" != 1 ] && [ "$ROLLBACK" != 1 ]; then
-    die "$EX_USAGE" "the plain dongle build has no 1200-baud touch: put the dongle into DFU mode with its reset button and use --skip-touch, or use the -dfutouch variant"
+# The 1200-baud touch only works if the firmware RUNNING now contains the touch module.
+if [ "$ENTRY" = touch ] && [ "$SKIP_TOUCH" != 1 ]; then
+    warn "--entry touch needs the touch module in the firmware running now (-dfutouch builds); the default --entry reset works with every current build"
 fi
 if [ -n "$FILE" ]; then
     case "$(basename "$FILE")" in
-        *dfutouch*) ;;
-        rcp-*-usb-dfu.zip)
-            [ "$SKIP_TOUCH" = 1 ] ||
-                die "$EX_USAGE" "$(basename "$FILE") is the PLAIN dongle build (no 1200-baud touch). Use the *-dfutouch-dfu.zip package, or enter DFU mode with the reset button and pass --skip-touch."
-            ;;
-        *) warn "cannot tell from the file name whether this package contains the touch module (expected *-dfutouch-dfu.zip)" ;;
+        *-dfu.zip) ;;
+        *) warn "$(basename "$FILE") does not look like a dongle DFU package (*-dfu.zip)" ;;
     esac
 fi
 if [ -n "$FILE" ] && [ "$DRY_RUN" != 1 ] && [ ! -f "$FILE" ]; then
@@ -126,24 +137,37 @@ make_workdir
 install_traps
 [ "$DRY_RUN" = 1 ] && info "DRY RUN: nothing below is executed"
 
+# Print the serial number of the only "Open DFU Bootloader" in 'nrfutil device list' output.
+# Expected blocks (nrfutil device, 2026-10): "F8BE95E3118D" / "Product  Open DFU Bootloader" / "Ports ..." / "Traits ...".
+dfu_serial_from_list() {
+    printf '%s\n' "$1" | awk '
+        /^[0-9A-Fa-f]+[[:space:]]*$/ { sn = $1; next }
+        /^Product[[:space:]].*Open DFU Bootloader/ { if (sn != "") { print sn; n++ } }
+        END { exit (n == 1 ? 0 : 1) }'
+}
+
 # ------------------------------------------------------------------ dependencies
 find_spinel_tool "$SCRIPT_DIR"
 NRFUTIL_FLAVOUR=""
-# Flavour detection (see README, "nrfutil"): the new Rust nrfutil with the nrf5sdk-tools command
-# (wraps pc-nrfutil 6.1.7) or the legacy Python nrfutil 6.1.x.
-if [ "$DRY_RUN" = 1 ]; then
-    NRFUTIL_FLAVOUR=new
-    info "(dry-run) assuming new nrfutil with the nrf5sdk-tools command"
-    if ! command -v "$NRFUTIL" >/dev/null 2>&1; then warn "(dry-run) '$NRFUTIL' not found"; fi
-elif command -v "$NRFUTIL" >/dev/null 2>&1; then
+# Flavour detection (see README, "nrfutil"):
+#   new    - Rust nrfutil + 'nrf5sdk-tools' (wraps pc-nrfutil 6.1.7); NOT published for aarch64 Linux
+#   device - Rust nrfutil + 'device' ('nrfutil device program --traits nordicDfu'); verified on a 64-bit Pi
+#   legacy - Python nrfutil 6.1.x
+if command -v "$NRFUTIL" >/dev/null 2>&1; then
     if "$NRFUTIL" nrf5sdk-tools dfu usb-serial --help >/dev/null 2>&1; then
         NRFUTIL_FLAVOUR=new
+    elif "$NRFUTIL" device program --help >/dev/null 2>&1; then
+        NRFUTIL_FLAVOUR=device
     elif "$NRFUTIL" dfu usb-serial --help >/dev/null 2>&1; then
         NRFUTIL_FLAVOUR=legacy
     fi
 fi
+if [ -z "$NRFUTIL_FLAVOUR" ] && [ "$DRY_RUN" = 1 ]; then
+    NRFUTIL_FLAVOUR=device
+    warn "(dry-run) no usable '$NRFUTIL' found, assuming 'nrfutil device'"
+fi
 if [ -z "$NRFUTIL_FLAVOUR" ]; then
-    die "$EX_DEPS" "no usable nrfutil. Install the new nrfutil and run 'nrfutil install nrf5sdk-tools' (see README); the legacy 'pip install nrfutil' does not install on Python >= 3.11"
+    die "$EX_DEPS" "no usable nrfutil. Install nRF Util and run 'nrfutil install device' (64-bit ARM and x86-64) or 'nrfutil install nrf5sdk-tools' (x86-64 only); see README"
 fi
 info "nrfutil flavour: $NRFUTIL_FLAVOUR"
 if [ -n "$RELEASE" ]; then need_cmd curl "apt install curl"; fi
@@ -163,12 +187,16 @@ if [ "$ROLLBACK" = 1 ]; then
     fi
     info "rollback package: $IMAGE"
 elif [ -n "$RELEASE" ]; then
-    if [ "$VARIANT" = dfutouch ]; then ASSET="$ASSET_BASE-dfutouch-dfu.zip"; else ASSET="$ASSET_BASE-dfu.zip"; fi
+    case "$VARIANT" in
+        legacyusb) ASSET="$ASSET_BASE-legacyusb-dfu.zip" ;;
+        dfutouch) ASSET="$ASSET_BASE-dfutouch-dfu.zip" ;;
+        *) ASSET="$ASSET_BASE-dfu.zip" ;;
+    esac
     URL="https://github.com/$REPO/releases/download/$RELEASE/$ASSET"
     run mkdir -p "$WORKDIR/image"
     http_get "$URL" "$WORKDIR/image/$ASSET" || die "$EX_DEPS" "download failed: $URL"
     IMAGE="$WORKDIR/image/$ASSET"
-    # CI currently publishes no checksum for the dongle zip; a .sha256 is used if one exists.
+    # CI publishes rcp-...-dfu.zip.sha256 next to the zip; it is verified when present.
     if [ "$DRY_RUN" = 1 ]; then
         info "(dry-run) would try $URL.sha256 and verify it if present"
     elif http_exists "$URL.sha256"; then
@@ -211,23 +239,40 @@ fi
 # ------------------------------------------------------------------ step 2: bootloader entry
 FLASH_TTY="$DFU_PORT"
 if [ "$SKIP_TOUCH" != 1 ]; then
-    spinel_run touch --port "$PORT" --baud 1200 --hold-ms 150 || die "$EX_ENTRY" "1200-baud touch failed on $PORT"
+    if [ "$ENTRY" = reset ]; then
+        # Spinel CMD_RESET / SPINEL_RESET_BOOTLOADER: the firmware pulls the reset pin (P0.19) via
+        # OPENTHREAD_PLATFORM_BOOTLOADER_MODE_GPIO. Verified on the Holyiot dongle (USB CDC ignores --baud).
+        fl=()
+        [ "$FLOW" = 1 ] && fl=(--flow)
+        spinel_run reset-bootloader --port "$PORT" --baud "$BAUD" "${fl[@]}" ||
+            die "$EX_ENTRY" "Spinel reset-to-bootloader failed on $PORT"
+    else
+        spinel_run touch --port "$PORT" --baud 1200 --hold-ms 150 || die "$EX_ENTRY" "1200-baud touch failed on $PORT"
+    fi
 fi
 if [ -z "$FLASH_TTY" ]; then
     spinel FLASH_TTY find-tty --vid-pid "$DFU_VIDPID" --timeout "$TOUCH_WAIT" ||
-        die "$EX_ENTRY" "no USB DFU device $DFU_VIDPID within ${TOUCH_WAIT}s. The firmware may lack the touch module, or the bootloader ignores magic 0xB1. Press the dongle's reset button (red LED pulsing) and re-run with --skip-touch."
+        die "$EX_ENTRY" "no USB DFU device $DFU_VIDPID within ${TOUCH_WAIT}s. Press the dongle's reset button (red LED pulsing) and re-run with --skip-entry."
     [ "$DRY_RUN" = 1 ] && FLASH_TTY="/dev/ttyACM<dfu>"
 fi
 info "bootloader serial port: $FLASH_TTY"
 
 # ------------------------------------------------------------------ step 3: flash
-if [ "$NRFUTIL_FLAVOUR" = new ]; then
+if [ "$NRFUTIL_FLAVOUR" = device ]; then
+    if [ -z "$DFU_SERIAL" ] && [ "$DRY_RUN" != 1 ]; then
+        DFU_SERIAL="$(dfu_serial_from_list "$("$NRFUTIL" device list 2>/dev/null)")" ||
+            die "$EX_ENTRY" "could not pick exactly one 'Open DFU Bootloader' in 'nrfutil device list'; pass --dfu-serial"
+    fi
+    [ -n "$DFU_SERIAL" ] || DFU_SERIAL="<serial>"
+    info "bootloader serial number: $DFU_SERIAL"
+    FLASH_CMD=("$NRFUTIL" device program --serial-number "$DFU_SERIAL" --firmware "$IMAGE" --traits nordicDfu)
+elif [ "$NRFUTIL_FLAVOUR" = new ]; then
     FLASH_CMD=("$NRFUTIL" nrf5sdk-tools dfu usb-serial -pkg "$IMAGE" -p "$FLASH_TTY" -b 115200)
 else
     FLASH_CMD=("$NRFUTIL" dfu usb-serial -pkg "$IMAGE" -p "$FLASH_TTY" -b 115200)
 fi
 if ! run "${FLASH_CMD[@]}"; then
-    err "nrfutil failed. The dongle stays in the bootloader (red LED pulsing): re-run with --skip-touch --dfu-port $FLASH_TTY to retry."
+    err "nrfutil failed. The dongle stays in the bootloader (red LED pulsing): re-run with --skip-entry to retry."
     exit "$EX_FLASH"
 fi
 
@@ -255,7 +300,7 @@ else
     fi
     POST_VERSION=""
     if ! wait_version POST_VERSION "$APP_TTY" "$BAUD" "$FLOW" "$APP_WAIT"; then
-        die "$EX_VERIFY" "no Spinel answer from $APP_TTY after the update. nrfutil reported success, so the new image may be broken: use --rollback, or the reset button + --skip-touch with a known good package."
+        die "$EX_VERIFY" "no Spinel answer from $APP_TTY after the update. nrfutil reported success, so the new image may be broken: use --rollback, or the reset button + --skip-entry with a known good package."
     fi
     info "Spinel version (after): $POST_VERSION"
     if [ "$DRY_RUN" = 1 ]; then

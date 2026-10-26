@@ -5,7 +5,7 @@ connects them to the Raspberry Pi (Raspberry Pi OS, systemd, `otbr-agent`):
 
 | Board | Folder | Route |
 | :--- | :--- | :--- |
-| Holyiot nRF52840 dongle (USB) | [`dongle/`](dongle) | 1200-baud touch, then USB DFU with `nrfutil` |
+| Holyiot nRF52840 dongle (USB) | [`dongle/`](dongle) | Spinel reset-to-bootloader, then USB DFU with `nrfutil device` |
 | Ebyte E73 (nRF52840, UART) | [`uart-modules/`](uart-modules) `--board e73` | Spinel reset-to-bootloader, then MCUboot serial recovery with `mcumgr-client` |
 | Ezurio nRF54L15 (UART) | [`uart-modules/`](uart-modules) `--board nrf54l15` | same |
 
@@ -88,17 +88,23 @@ The binary is dynamically linked (glibc >= 2.34, `libdbus-1.so.3`; checked in th
 
 ### nrfutil (dongle)
 
-Use the **new nrfutil with the `nrf5sdk-tools` command** (version 8.x, `nrf5sdk-tools` 1.1.0). It bundles the legacy
-`pc-nrfutil` 6.1.7 engine, so it accepts the same options and the same zip files. Install:
+Use **nRF Util with the `device` command**. Nordic's package index for 64-bit ARM Linux (checked 2026-10-26) has
+`device`, `mcu-manager`, `sdk-manager`, `trace`, `ble-sniffer`, `91`, `93-series`, but **not `nrf5sdk-tools`**
+(`nrfutil install nrf5sdk-tools` fails with "Package not found in registry"), and there is no nRF Util for 32-bit ARM.
+`nrfutil device program --traits nordicDfu` flashes the dongle's DFU zip; verified on a 64-bit Pi on 2026-10-26.
 
 ```bash
 # aarch64 (Pi, 64-bit OS):
 curl -fL -o nrfutil https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/executables/aarch64-unknown-linux-gnu/nrfutil
 # x86-64: .../x86_64-unknown-linux-gnu/nrfutil
 chmod +x nrfutil && sudo mv nrfutil /usr/local/bin/
-nrfutil install nrf5sdk-tools
-nrfutil nrf5sdk-tools dfu usb-serial --help     # must print the usb-serial options
+nrfutil install device
+nrfutil device list        # in the bootloader the dongle shows "Product Open DFU Bootloader", traits nordicDfu, ...
 ```
+
+The script picks, in this order: `nrfutil nrf5sdk-tools dfu usb-serial` (x86-64 only; wraps `pc-nrfutil` 6.1.7),
+`nrfutil device program --serial-number <SN> --firmware <zip> --traits nordicDfu` (the serial number is taken from the
+only "Open DFU Bootloader" in `nrfutil device list`, or `--dfu-serial`), legacy Python `nrfutil dfu usb-serial`.
 
 Nordic publishes no checksum next to that URL, so the script does not auto-install nrfutil (unlike mcumgr-client).
 The scripts also accept the **legacy** Python `nrfutil` 6.1.x (`nrfutil dfu usb-serial ...`) if it is installed, but
@@ -113,7 +119,7 @@ Release tag: `ncs-<NCS version>_thread-<version>_ot-<sha>`, e.g. `ncs-v3.4.1_thr
 
 | Board | Plain (not usable here) | Update-capable (what the scripts use) |
 | :--- | :--- | :--- |
-| Dongle | `rcp-holyiot-nrf52840-dongle-usb[.hex/.bin/-dfu.zip]` | `rcp-holyiot-nrf52840-dongle-usb-dfutouch-dfu.zip` (contains the 1200-baud touch module) |
+| Dongle | (none: every dongle build supports the Spinel reset) | `rcp-holyiot-nrf52840-dongle-usb-legacyusb-dfu.zip` + `.sha256` (the only dongle build CI publishes) |
 | E73 | `rcp-ebyte-e73-nrf52840-<baud>baud-<flow\|noflow>.hex/.bin` | `rcp-ebyte-e73-nrf52840-<baud>baud-<flow\|noflow>-mcuboot-update.bin` + `.sha256` (the `...-mcuboot.hex` merged hex is for the **one-time SWD flash**) |
 | Ezurio | `rcp-ezurio-nrf54l15-<baud>baud-<flow\|noflow>.hex/.bin` | `rcp-ezurio-nrf54l15-<baud>baud-<flow\|noflow>-mcuboot-update.bin` + `.sha256` |
 
@@ -123,8 +129,8 @@ While no signing secret exists, MCUboot builds use MCUboot's **public developmen
 name.
 
 What the scripts refuse, with exit code 2, before touching anything: a plain `.hex`/`.bin` for a UART module, a file
-without the MCUboot image header (`3D B8 F3 96`, magic `0x96f3b83d`), an image larger than the slot, `--variant plain`,
-a plain dongle zip for the touch route (it has no touch module; enter DFU with the reset button and use `--skip-touch`).
+without the MCUboot image header (`3D B8 F3 96`, magic `0x96f3b83d`), an image larger than the slot, `--variant plain`
+for a UART module, an unknown `--entry` for the dongle.
 
 ## Finding the port and stable names
 
@@ -159,10 +165,10 @@ All commands accept `--dry-run`: it prints every command and touches nothing (no
 device access). Run it first. Examples use the release `ncs-v3.4.1_thread-1.4_ot-0fe68ff`; use `--file` instead of
 `--release` for a local file.
 
-### Dongle (1200-baud touch + USB DFU)
+### Dongle (Spinel reset + USB DFU)
 
-Prerequisite: the dongle already runs the `-dfutouch` firmware (first install with the reset button, `nrfutil` and the
-`-dfutouch-dfu.zip`, or nRF Connect Programmer).
+Prerequisite: the dongle runs a build of this project (the Spinel reset-to-bootloader is in every current build). The
+first install can be done with the reset button and nRF Connect Programmer.
 
 ```bash
 cd dongle
@@ -171,17 +177,17 @@ sudo ./update-dongle.sh          --port /dev/rcp-dongle --release ncs-v3.4.1_thr
 ```
 
 What happens: record `ot-ctl rcp version` and stop `otbr-agent` (only if active) -> Spinel version query (before) ->
-open the port at exactly 1200 baud 8N1, hold 150 ms, drop DTR, close -> wait up to 10 s for `1915:521f` ->
-`nrfutil nrf5sdk-tools dfu usb-serial -pkg <zip> -p <tty> -b 115200` -> wait for the app port and a Spinel answer ->
-compare versions -> restart `otbr-agent` (always, via `trap`, only if the script stopped it).
+send the Spinel reset-to-bootloader frame (`7E 81 01 03 BF BB 7E`) -> wait up to 10 s for `1915:521f` ->
+`nrfutil device program --serial-number <SN> --firmware <zip> --traits nordicDfu` (or `nrf5sdk-tools` on x86-64) ->
+wait for the app port and a Spinel answer -> compare versions -> restart `otbr-agent` (always, via `trap`, only if
+the script stopped it).
 
-Expected (unverified): `touch done on ...`, `bootloader serial port: /dev/ttyACMn`, the nrfutil progress bar and
-`Device programmed.`, `Spinel version (after): OPENTHREAD/...`, `version changed: OK`, exit 0. Manual check of the
-first step on the bench, before the script: `python3 -c "import serial; serial.Serial('/dev/ttyACM0',1200).close()"`,
-then `lsusb` should show `1915:521f` within about a second (LED pulsing red).
+Verified manually on hardware (2026-10-26): `rcp_spinel.py reset-bootloader` -> `lsusb` shows `1915:521f Open DFU
+Bootloader` -> `nrfutil device program ... --traits nordicDfu` -> working RCP. The script as a whole: not yet.
 
-Dongle options: `--skip-touch [--dfu-port /dev/ttyACMn]` (dongle already in DFU via the reset button, also the retry path
-after a failed flash: the bootloader stays up), `--dfu-vid-pid`, `--app-vid-pid`.
+Dongle options: `--skip-entry` (alias `--skip-touch`; dongle already in the bootloader, also the retry path after a
+failed flash: the bootloader stays up), `--entry touch` (only for `-dfutouch` builds), `--dfu-serial SN`,
+`--dfu-port`, `--dfu-vid-pid`, `--app-vid-pid`.
 
 ### Ebyte E73 and Ezurio nRF54L15 (Spinel reset + MCUboot serial recovery)
 
@@ -239,9 +245,10 @@ case needs a recovery entry that is not built (see the firmware gap analysis) an
 | :--- | :--- | :--- |
 | `cannot open ... busy` | `otbr-agent`, `ot-ctl`, ModemManager or another tool holds the port (ports are opened exclusively) | `sudo systemctl stop otbr-agent`, `fuser -v /dev/ttyAMA0`, `--no-service` only if you stopped it yourself |
 | `permission denied` | not in `dialout` | `sudo usermod -aG dialout $USER`, re-login, or use `sudo` |
-| Dongle: no `1915:521f` after the touch (exit 3) | firmware is not the `-dfutouch` build, bootloader ignores magic `0xB1` (not Nordic's bootloader), a different VID:PID | reset button, `lsusb`, `--skip-touch`; adjust `--dfu-vid-pid` if the bootloader id differs |
-| Dongle reboots into the app again after the touch | bootloader ignored the magic (no loop: baud returns to 115200) | as above |
-| `nrfutil` fails mid-way | cable/hub, bootloader timeout | dongle stays in DFU: `--skip-touch --dfu-port /dev/ttyACMn` |
+| Dongle: no `1915:521f` after the reset (exit 3) | port held by another process, wrong `--port`, firmware without bootloader mode | `fuser -v`, reset button, `lsusb`, then `--skip-entry` |
+| `no usable nrfutil` (exit 6) / `Package not found in registry` | `nrf5sdk-tools` does not exist for 64-bit ARM | `nrfutil install device` |
+| `could not pick exactly one 'Open DFU Bootloader'` | none or several dongles in the bootloader | `nrfutil device list`, then `--dfu-serial SN` |
+| `nrfutil` fails mid-way | cable/hub, bootloader timeout | dongle stays in the bootloader: `--skip-entry` |
 | UART: reset frame written but no `Echo response` (exit 3) | app has no bootloader mode (not the `-mcuboot` build), wrong `--baud/--flow`, retention flag lost, port held by another process | check variant and `ot-ctl diag rcpcaps spinel`; `--skip-reset` after a manual entry; SWD as last resort |
 | Echo OK, upload `wrong offset` / `wrong checksum` / timeouts | dropped bytes, `-u` too small | retry the whole script (restart at offset 0 is supported); long cables |
 | Upload fails at once with an SMP `rc` | wrong `--slot`, image larger than slot, no direct upload build | the script always passes `--slot 2`; check `list` |
@@ -257,8 +264,8 @@ use `--deep-verify` (compares image hashes).
 
 ## Safety notes
 
-* **1200 baud on the dongle's port reboots it into the bootloader.** Never open that port at 1200 from any other
-  program, and never configure `otbr-agent` with `uart-baudrate=1200`. The scripts refuse `--baud 1200`.
+* **Only for `-dfutouch` builds: 1200 baud on the dongle's port reboots it into the bootloader.** The published
+  `-legacyusb` build has no touch module. The scripts refuse `--baud 1200` anyway.
 * **UART modules recover at a fixed 115200 8N1, no flow control**, independent of the application (the firmware
   build fixes it; `--recovery-baud` exists only for custom builds).
 * **Development-key builds (`-DEVKEY`, CI artifacts named `devkey-rcp-*`) must not be shipped.** MCUboot's public
@@ -268,7 +275,7 @@ use `--deep-verify` (compares image hashes).
   refuses to continue if another device with the bootloader id is already attached.
 * `otbr-agent` is restarted on every exit path (also on failure, Ctrl-C, SIGTERM) but only if the script stopped it.
 * Downloads go to a private temporary directory, are sha256 checked (`.sha256` assets; pinned hashes for
-  mcumgr-client) and the directory is removed on exit. The dongle zip has no published checksum yet (warning).
+  mcumgr-client) and the directory is removed on exit. CI publishes a `.sha256` for the dongle zip too.
 * Upload goes to the secondary slot, the running image stays intact until MCUboot has validated the new one.
 
 ## Verified vs. unverified
@@ -281,8 +288,10 @@ UART script against fake `mcumgr-client`/helper binaries (success path, upload f
 the real download + double sha256 check + unzip of mcumgr-client v0.1.0, `nrfutil nrf5sdk-tools` help text and
 version (Windows build of nrfutil 8.2.1).
 
-Verified on hardware (2026-10-26, Raspberry Pi, Holyiot dongle `-legacyusb` build): the Spinel reset-to-bootloader
-frame is accepted by the RCP, the dongle re-enumerates as `1915:521f`, and re-flashing gives a working RCP.
+Verified on hardware (2026-10-26, 64-bit Raspberry Pi, Holyiot dongle `-legacyusb` build): the Spinel
+reset-to-bootloader frame (`rcp_spinel.py`) is accepted by the RCP, the dongle re-enumerates as `1915:521f`,
+`nrfutil device program --traits nordicDfu` flashes the DFU zip, and the new RCP works (receive verified with
+`ot-ctl discover`).
 
 Not verified: anything else that needs a device or Linux serial semantics. In particular: the 1200-baud touch on the real
 dongle (and that its bootloader honours `0xB1`), the update scripts end to end, MCUboot answering SMP echo/list/upload at 115200, the overwrite-only copy, the
