@@ -36,8 +36,11 @@ Pushes to `main` (or a manual run with **release** ticked) also publish a GitHub
 ### Holyiot dongle: external PA/LNA front-end
 The Holyiot dongle has an external PA/LNA (RFX4201C-style, two control pins: CTX = P0.24, CRX = P0.22). All dongle builds therefore include [boards/nrf52840dongle_nrf52840-fem.overlay](boards/nrf52840dongle_nrf52840-fem.overlay) and [.conf](boards/nrf52840dongle_nrf52840-fem.conf), taken from the vendor's working NCS 3.1.0 configuration. Without it the radio does not drive the PA pins; an earlier build without it crashed Raspberry Pi 3 hosts once `otbr-agent` started the radio (suspected cause: PA left enabled, high current). These two pins are the stock dongle's UART RX and CTS, so a UART/NCP build on this dongle needs different pins.
 
+### Holyiot dongle: legacy USB stack
+The dongle is built on NCS v3.4.1 with the *legacy* USB device stack ([boards/nrf52840dongle_nrf52840-legacyusb.conf](boards/nrf52840dongle_nrf52840-legacyusb.conf)), because the sample's new stack (`USB_DEVICE_STACK_NEXT`) hung Raspberry Pi 3 hosts. The legacy stack only starts when `CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y`; without it nothing calls `usb_enable()` and the dongle never appears as a USB device. CI fails the dongle build if that option is missing.
+
 ### Output Artifacts
-Each matrix entry uploads its own artifact (`rcp-<module>-<baud>baud-<flow|noflow>`, or `rcp-holyiot-nrf52840-dongle-usb`) with files named after it (`.hex`, `.bin`, and `-dfu.zip` for the dongle). Every board also has an update-capable variant with a suffix (`-dfutouch` for the dongle, `-mcuboot` for the UART modules); the plain builds keep their original names and behaviour:
+Each matrix entry uploads its own artifact (`rcp-<module>-<baud>baud-<flow|noflow>`, or `rcp-holyiot-nrf52840-dongle-usb-legacyusb`) with files named after it (`.hex`, `.bin`, and `-dfu.zip` for the dongle). The UART modules also have an update-capable `-mcuboot` variant; the plain builds keep their original names and behaviour:
 * `zephyr.hex` / `zephyr.bin` – Raw binaries for hardware programmers (SWD).
 * Ebyte E73 and Ezurio `-mcuboot` builds include MCUboot (serial recovery over the same UART pins): `rcp-<module>-<baud>baud-<flow|noflow>-mcuboot.hex` is the **merged hex (MCUboot + signed application)** for the one-time SWD flash, `...-mcuboot-update.bin` is the signed image for over-the-cable updates and `...-update.bin.sha256` its checksum. No raw `.bin` is published for these variants; the plain builds (no suffix) stay as before. Until a signing secret is configured these are signed with MCUboot's public development key; their file names contain `-DEVKEY` and they must not be shipped. Details: [docss/bootloader_and_update.md](docss/bootloader_and_update.md).
 * `dfu_application.zip` – Holyiot dongle only: update package for the USB DFU bootloader (generated with `nrfutil pkg generate`).
@@ -55,7 +58,7 @@ This device features a pre-flashed USB bootloader. You do **not** need a hardwar
 #### 🍏 Programmatic Reset (No magnet needed!)
 Instead of using a physical magnet or button to force DFU mode, you can trigger a software restart into the bootloader by toggling the serial port at **1200 baud**.
 
-> **Note:** the dongle build of this repo includes the 1200-baud touch ([app-extensions/dongle-dfu](app-extensions/dongle-dfu)): opening and closing the CDC port at exactly 1200 baud writes `0xB1` to GPREGRET and reboots into the bootloader (expect `1915:521f` in `lsusb`). This is untested on hardware and assumes the dongle's bootloader is Nordic's USB DFU bootloader; see [docss/bootloader_and_update.md](docss/bootloader_and_update.md). Stock firmware has no touch, and if the port does not reset, enter DFU mode with the dongle's reset button instead.
+> **Note:** the 1200-baud touch ([app-extensions/dongle-dfu](app-extensions/dongle-dfu)) is **not** part of the CI dongle build any more (only the `-legacyusb` build is published); if you add the module back, opening and closing the CDC port at exactly 1200 baud writes `0xB1` to GPREGRET and reboots into the bootloader (expect `1915:521f` in `lsusb`). This is untested on hardware and assumes the dongle's bootloader is Nordic's USB DFU bootloader; see [docss/bootloader_and_update.md](docss/bootloader_and_update.md). Stock firmware has no touch, and if the port does not reset, enter DFU mode with the dongle's reset button instead.
 
 #### 🔸 From Raspberry Pi
 1. Install [nRF Util](https://www.nordicsemi.com/Products/Development-tools/nrf-util) and its legacy DFU command: `nrfutil install nrf5sdk-tools` (the old `pip install nrfutil` package does not install on current Raspberry Pi OS). For a guided, verified update use the scripts in [update-tools/](update-tools/README.md).
@@ -69,7 +72,7 @@ Instead of using a physical magnet or button to force DFU mode, you can trigger 
    sleep 2
 
    # Flash the new zip package
-   nrfutil nrf5sdk-tools dfu usb-serial -pkg rcp-holyiot-nrf52840-dongle-usb-dfutouch-dfu.zip -p /dev/ttyACM0 -b 115200
+   nrfutil nrf5sdk-tools dfu usb-serial -pkg rcp-holyiot-nrf52840-dongle-usb-legacyusb-dfu.zip -p /dev/ttyACM0 -b 115200
 
    # Restart the router agent
    sudo systemctl start otbr-agent

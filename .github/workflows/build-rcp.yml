@@ -15,7 +15,7 @@ jobs:
     # Pinned: ubuntu-latest is migrating to Ubuntu 26
     runs-on: ubuntu-latest
     # Official NCS toolchain image. `env` is not allowed in container.image, so it uses the matrix
-    # value directly (default v3.4.1; the dongle also has a v3.1.0 variant, see matrix).
+    # value directly (default v3.4.1).
     container:
       image: ghcr.io/nrfconnect/sdk-nrf-toolchain:${{ matrix.ncs || 'v3.4.1' }}
     defaults:
@@ -30,63 +30,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Every board has a plain build (original behaviour, file names unchanged) and an
-          # update-capable build with a "-<suffix>" in its file names:
-          #   dongle:      plain, and "-dfutouch" (1200-baud touch -> USB DFU bootloader)
-          #   UART boards: plain, and "-mcuboot" (MCUboot + UART serial recovery, see mcuboot/ and
-          #                docss/bootloader_and_update.md)
+          # UART boards have a plain build (file names unchanged) and an update-capable "-mcuboot" build
+          # (MCUboot + UART serial recovery, see mcuboot/ and docss/bootloader_and_update.md).
 
-          # Holyiot dongle: always USB CDC ACM, baud/flow are irrelevant
-          - name: holyiot-nrf52840-dongle
-            board: nrf52840dongle/nrf52840
-            usb: true
-            board_overlay: ''
-            uart: ''
-            baud: 0
-            flow: n
-          - name: holyiot-nrf52840-dongle
-            board: nrf52840dongle/nrf52840
-            usb: true
-            touch: true
-            suffix: -dfutouch
-            board_overlay: ''
-            uart: ''
-            baud: 0
-            flow: n
-
-          # Holyiot dongle on NCS v3.1.0: the vendor's known-good configuration was built with 3.1.0.
-          # Fallback/reference if the 3.4.1 build misbehaves on the Pi. Not used for the release tag.
-          - name: holyiot-nrf52840-dongle
-            board: nrf52840dongle/nrf52840
-            usb: true
-            ncs: v3.1.0
-            suffix: -ncs3.1.0
-            board_overlay: ''
-            uart: ''
-            baud: 0
-            flow: n
-
-          # Dongle bisect (NCS 3.1.0 works on the Pi 3, 3.4.1 hangs it). OpenThread is the same revision in
-          # 3.1.0-3.3.4; the sample uses the legacy USB stack up to 3.2.x and the new one from 3.3.0.
-          - name: holyiot-nrf52840-dongle
-            board: nrf52840dongle/nrf52840
-            usb: true
-            ncs: v3.2.2
-            suffix: -ncs3.2.2
-            board_overlay: ''
-            uart: ''
-            baud: 0
-            flow: n
-          - name: holyiot-nrf52840-dongle
-            board: nrf52840dongle/nrf52840
-            usb: true
-            ncs: v3.3.4
-            suffix: -ncs3.3.4
-            board_overlay: ''
-            uart: ''
-            baud: 0
-            flow: n
-          # NCS 3.4.1 with the legacy USB stack (experiment; copies the sample with the legacy board conf)
+          # Holyiot dongle: always USB CDC ACM, baud/flow are irrelevant.
+          # Built on NCS v3.4.1 with the LEGACY USB device stack. The v3.4.1 sample selects the new stack
+          # (USB_DEVICE_STACK_NEXT), which hung the Raspberry Pi 3 USB host while NCS <= 3.2 (legacy stack) worked.
+          # The legacy stack is only brought up if CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y; nothing else calls
+          # usb_enable(), so without it the dongle never enumerates. See boards/nrf52840dongle_nrf52840-legacyusb.conf.
           - name: holyiot-nrf52840-dongle
             board: nrf52840dongle/nrf52840
             usb: true
@@ -282,14 +233,7 @@ jobs:
             EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
           else
             # Holyiot dongle: external PA/LNA front-end control (without it the PA pins are not driven)
-            # NCS 3.4 renamed the FEM compatible, so the NCS 3.1.0 variant uses its own overlay.
-            FEM_OVERLAY=nrf52840dongle_nrf52840-fem.overlay
-            case "${{ matrix.ncs }}" in v3.1.0|v3.2.2) FEM_OVERLAY=nrf52840dongle_nrf52840-fem-ncs3.1.overlay ;; esac
-            EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/$FEM_OVERLAY -DEXTRA_CONF_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.conf"
-            if [ "${{ matrix.touch }}" = "true" ]; then
-              # Dongle "-dfutouch" variant: 1200-baud touch -> USB DFU bootloader (sysbuild image prefix: coprocessor_)
-              EXTRA="$EXTRA -Dcoprocessor_ZEPHYR_EXTRA_MODULES=$GITHUB_WORKSPACE/ot-rcp/app-extensions/dongle-dfu"
-            fi
+            EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.overlay -DEXTRA_CONF_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.conf"
           fi
 
           LAUNCHER=""
@@ -314,16 +258,14 @@ jobs:
       - name: Verify dongle front-end and variant configuration
         if: ${{ matrix.usb }}
         run: |
-          # Fail the build if the PA/LNA front-end (or the touch module) silently dropped out.
+          # Fail the build if the PA/LNA front-end or the USB boot-time init silently dropped out.
           CFG=ncs/build/coprocessor/zephyr/.config
           for o in CONFIG_MPSL_FEM=y CONFIG_MPSL_FEM_SIMPLE_GPIO=y; do
             grep -qx "$o" "$CFG" || { echo "::error::$o missing from $CFG (dongle FEM not applied)"; exit 1; }
           done
           grep -q "nrf_radio_fem" ncs/build/coprocessor/zephyr/zephyr.dts || { echo "::error::nrf_radio_fem node missing"; exit 1; }
-          if [ "${{ matrix.touch }}" = "true" ]; then
-            grep -qx CONFIG_DONGLE_DFU_TOUCH=y "$CFG" || { echo "::error::dongle DFU touch module not in image"; exit 1; }
-          fi
-          grep -E "MPSL_FEM|DONGLE_DFU|OPENTHREAD_COPROCESSOR_RCP" "$CFG" | head
+          grep -qx CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y "$CFG" || { echo "::error::USB_DEVICE_INITIALIZE_AT_BOOT missing (dongle would not enumerate)"; exit 1; }
+          grep -E "MPSL_FEM|USB_DEVICE_STACK|USB_DEVICE_INITIALIZE|OPENTHREAD_COPROCESSOR_RCP" "$CFG" | head
 
       - name: Package DFU zip (Holyiot dongle)
         if: ${{ matrix.usb }}
