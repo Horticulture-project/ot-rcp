@@ -134,8 +134,8 @@ ls -l /dev/serial/by-id/               # stable names that include the USB seria
 ps -o args= -C otbr-agent              # the URL shows the port and uart-baudrate/uart-flow-control the agent uses
 ```
 
-* **Dongle**: application mode is `1915:0000` ("Thread Co-Processor"), bootloader mode is assumed to be `1915:521f`
-  (Nordic's open DFU bootloader; **verify on the Holyiot unit** with `lsusb` after pressing its reset button). The tty
+* **Dongle**: application mode is `1915:0000` ("Thread Co-Processor"), bootloader mode is `1915:521f`
+  (Nordic's open DFU bootloader; **verified on the Holyiot unit on 2026-10-26** via the Spinel reset, seen in `lsusb`). The tty
   number changes between the two modes, so give `--port` as a `/dev/serial/by-id/...` or a udev symlink.
 * **E73 / Ezurio** wired to the Pi header: `/dev/ttyAMA0` (alias `/dev/serial0`). Enable the UART, disable the
   console on it, and for the 460800 variants enable RTS/CTS (`dtoverlay=uart0,ctsrts`, see the firmware README).
@@ -281,9 +281,11 @@ UART script against fake `mcumgr-client`/helper binaries (success path, upload f
 the real download + double sha256 check + unzip of mcumgr-client v0.1.0, `nrfutil nrf5sdk-tools` help text and
 version (Windows build of nrfutil 8.2.1).
 
-Not verified: anything that needs a device or Linux serial semantics. In particular: the 1200-baud touch on the real
-dongle (and that its bootloader is `1915:521f` and honours `0xB1`), nrfutil flashing the real zip, the Spinel reset
-frame being accepted by the RCP, MCUboot answering SMP echo/list/upload at 115200, the overwrite-only copy, the
+Verified on hardware (2026-10-26, Raspberry Pi, Holyiot dongle `-legacyusb` build): the Spinel reset-to-bootloader
+frame is accepted by the RCP, the dongle re-enumerates as `1915:521f`, and re-flashing gives a working RCP.
+
+Not verified: anything else that needs a device or Linux serial semantics. In particular: the 1200-baud touch on the real
+dongle (and that its bootloader honours `0xB1`), the update scripts end to end, MCUboot answering SMP echo/list/upload at 115200, the overwrite-only copy, the
 `rcp-update` binary on Linux (only compiled, not run), the Python fallback on Linux (only the frame/decoder logic was
 run), the CI workflow (never executed), and `ot-ctl rcp version` output handling.
 

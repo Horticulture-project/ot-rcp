@@ -95,14 +95,24 @@ legacy USB stack up to NCS 3.2.x and `USB_DEVICE_STACK_NEXT` from 3.3.0; (2) the
 3.1.0-3.3.4 (`ncs-thread-reference-20250402`) and changes in 3.4.0 (`0fe68ff`); (3) the front-end compatible was renamed in
 3.3.0. CI builds `-ncs3.2.2` (legacy USB, same OT) and `-ncs3.3.4` (new USB, same OT). Reading: 3.2.2 ok + 3.3.4 hangs => new
 USB stack; 3.3.4 ok => the 3.4 OpenThread/other changes. A third experiment, NCS 3.4.1 with the legacy USB stack
-(`CONFIG_USB_DEVICE_STACK`), was tried and does not link on 3.4.1 (`ld returned 1 exit status`), so it was dropped.
+(`CONFIG_USB_DEVICE_STACK`), first did not link on 3.4.1 (both stacks defined the CDC ACM device).
+
+**Resolution (2026-10-26, verified on the Pi):** NCS 3.4.1 with the legacy USB stack is the dongle build.
+`boards/nrf52840dongle_nrf52840-legacyusb.conf` explicitly disables `USB_DEVICE_STACK_NEXT` (fixes the link error) and
+sets `USB_DEVICE_INITIALIZE_AT_BOOT=y`. That option has no default and nothing else in the sample or the OpenThread
+platform calls `usb_enable()`, so without it the dongle never enumerates (first legacy build: no USB device at all).
+With both, the dongle enumerates and the Pi reports `RCP-firmware 0fe68ff; Zephyr; Oct 26 2026 08:41:29`. CI checks the
+option in the final `.config`. The other dongle variants (plain, `-dfutouch`, `-ncs3.x`) are no longer built.
 
 ### Holyiot dongle bootloader
 
 **Field evidence (2026-10-21, from the project owner):** an older RCP firmware was flashed to a Holyiot dongle through the
 pre-flashed Nordic bootloader, with no SWD/SWC programmer involved. So the dongle ships with a working USB DFU bootloader,
-almost certainly Nordic's. Still unconfirmed: the DFU USB ID (`1915:521f` expected), and whether it honours the
-`GPREGRET = 0xB1` entry used by the touch module. That older firmware reports
+Nordic's open bootloader. **Verified on hardware (2026-10-26):** a Spinel `reset-bootloader` (`rcp_spinel.py`, i.e. the
+firmware's `OPENTHREAD_PLATFORM_BOOTLOADER_MODE_GPIO` reset pin P0.19) from the Pi puts the dongle into the bootloader,
+and `lsusb` shows `1915:521f Nordic Semiconductor ASA Open DFU Bootloader`; re-flashing from the bootloader gives a
+working RCP again. Still unconfirmed: whether it honours the `GPREGRET = 0xB1` entry used by the touch module (not
+part of the CI dongle build any more). That older firmware reports
 `thread-reference-20250612-1400-g22b2ec2a8; NRF52840; Aug 15 2026 01:11:15` (upstream OpenThread commit from 2026-08-08,
 platform tag typical of OpenThread's own nRF platform rather than Zephyr), i.e. it is not an NCS release build.
 
