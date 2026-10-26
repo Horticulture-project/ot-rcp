@@ -9,6 +9,10 @@ on:
         description: Publish a GitHub release (tag = NCS version + Thread version + OpenThread SHA)
         type: boolean
         default: false
+      revision:
+        description: Optional release revision suffix (e.g. r2) appended to the tag, so a new release is created instead of updating the one with the same versions
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -351,8 +355,8 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ncs-${{ env.NCS_VERSION }}_thread-${{ env.THREAD_VERSION }}_ot-${{ needs.build.outputs.ot_sha }}
-          name: RCP firmware - NCS ${{ env.NCS_VERSION }} / Thread ${{ env.THREAD_VERSION }} / OpenThread ${{ needs.build.outputs.ot_sha }}
+          tag_name: ncs-${{ env.NCS_VERSION }}_thread-${{ env.THREAD_VERSION }}_ot-${{ needs.build.outputs.ot_sha }}${{ inputs.revision && format('-{0}', inputs.revision) || '' }}
+          name: RCP firmware - NCS ${{ env.NCS_VERSION }} / Thread ${{ env.THREAD_VERSION }} / OpenThread ${{ needs.build.outputs.ot_sha }}${{ inputs.revision && format(' ({0})', inputs.revision) || '' }}
           target_commitish: ${{ github.sha }}
           body: |
             OpenThread Radio Co-Processor (RCP) firmware.
