@@ -324,6 +324,22 @@ jobs:
             (cd out && sha256sum rcp-*-update.bin > "$(ls rcp-*-update.bin | head -n 1).sha256")
           fi
 
+      - name: Report radio, FEM and TX power configuration
+        run: |
+          # Saved next to the firmware and shown as a notice annotation (readable without log access).
+          REPORT="out/rcp-${{ steps.collect.outputs.base }}-radio-config.txt"
+          {
+            echo "## .config: OPENTHREAD_DEFAULT_TX_POWER|MPSL_FEM|IEEE802154|HW_ID|EUI"
+            grep -E 'OPENTHREAD_DEFAULT_TX_POWER|MPSL_FEM|IEEE802154|HW_ID|EUI' ncs/build/*/zephyr/.config || true
+            echo "## .config: other TX power / radio driver options"
+            grep -E 'NRF_802154_.*(POWER|FEM|PA_|LNA)|TX_POWER|_TXPOWER|OPENTHREAD_.*POWER' ncs/build/*/zephyr/.config | grep -v 'OPENTHREAD_DEFAULT_TX_POWER' || true
+            echo "## zephyr.dts: fem|radio (-A5)"
+            grep -A5 -iE 'fem|radio' ncs/build/*/zephyr/zephyr.dts || true
+          } > "$REPORT"
+          cat "$REPORT"
+          MSG=$(sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g' "$REPORT")
+          echo "::notice title=radio-config ${{ steps.collect.outputs.base }}::${MSG:0:60000}"
+
       - name: Remove MCUboot signing key
         if: ${{ always() && matrix.mcuboot }}
         run: rm -f "${MCUBOOT_KEY_FILE:-/nonexistent}" "$GITHUB_WORKSPACE/overlay-sysbuild-sign.conf"
