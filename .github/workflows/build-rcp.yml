@@ -269,6 +269,7 @@ jobs:
           done
           grep -q "nrf_radio_fem" ncs/build/coprocessor/zephyr/zephyr.dts || { echo "::error::nrf_radio_fem node missing"; exit 1; }
           grep -qx CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y "$CFG" || { echo "::error::USB_DEVICE_INITIALIZE_AT_BOOT missing (dongle would not enumerate)"; exit 1; }
+          grep -qx CONFIG_OPENTHREAD_DEFAULT_TX_POWER=16 "$CFG" || { echo "::error::dongle default TX power is not 16 (FEM: 0 would mean about -18 dBm on air)"; exit 1; }
           # uart0 shares P0.24/P0.22 with the FEM CTX/CRX pins; it must be disabled or the PA/LNA never switch.
           UART0_STATUS=$(awk '/uart0: uart@/{f=1} f&&/status =/{print; exit}' ncs/build/coprocessor/zephyr/zephyr.dts)
           echo "uart0: $UART0_STATUS"

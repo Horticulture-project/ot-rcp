@@ -48,9 +48,11 @@ rounds the nRF52840 output *down* to its next supported step, so the achieved po
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | On air (dBm) | -18 | 2 | 6 | 10 | 14 | 18 | 22 |
 
-The firmware default (`CONFIG_OPENTHREAD_DEFAULT_TX_POWER=0`) therefore gives only about -18 dBm; set it on the host,
-e.g. `sudo ot-ctl txpower 16` (about 14 dBm). `ot-ctl txpower` shows the requested value, not the achieved one. Mind the
-regulatory limit (EU 2.4 GHz: 20 dBm EIRP, i.e. including antenna gain).
+The stock default (`CONFIG_OPENTHREAD_DEFAULT_TX_POWER=0`) would give only about -18 dBm, and `ot-ctl txpower` is not
+persisted (after a reflash or restart the RCP is back at its default), so the dongle build sets the default to **16**
+(about 14 dBm on air) in [boards/nrf52840dongle_nrf52840-fem.conf](boards/nrf52840dongle_nrf52840-fem.conf); CI checks
+it. `ot-ctl txpower` shows the requested value, not the achieved one. Mind the regulatory limit (EU 2.4 GHz: 20 dBm
+EIRP, i.e. including antenna gain).
 
 ### Holyiot dongle: legacy USB stack
 The dongle is built on NCS v3.4.1 with the *legacy* USB device stack ([boards/nrf52840dongle_nrf52840-legacyusb.conf](boards/nrf52840dongle_nrf52840-legacyusb.conf)), because the sample's new stack (`USB_DEVICE_STACK_NEXT`) hung Raspberry Pi 3 hosts. The legacy stack only starts when `CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y`; without it nothing calls `usb_enable()` and the dongle never appears as a USB device. CI fails the dongle build if that option is missing.
@@ -102,7 +104,7 @@ Holyiot dongle on 2026-10-26. The reset button still works as a fallback.
 
    sudo systemctl start otbr-agent
    sudo ot-ctl rcp version    # new build date
-   sudo ot-ctl txpower 16     # re-apply if needed (see TX power note below)
+   sudo ot-ctl txpower        # 16 by default (see the TX power note)
    ```
    On x86-64 Linux `nrfutil nrf5sdk-tools dfu usb-serial -pkg <zip> -p <tty> -b 115200` works as well.
 
