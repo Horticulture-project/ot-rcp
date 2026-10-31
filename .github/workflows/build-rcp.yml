@@ -52,6 +52,21 @@ jobs:
             baud: 0
             flow: n
 
+          # Experiment: the same dongle build, but with UPSTREAM OpenThread (plain openthread/openthread, the commit
+          # Zephyr pins in this NCS) instead of Nordic's sdk-openthread fork, so the RCP source is closer to OTBR-posix.
+          # See docss/RCP-version-compatibility.md. Bootloader/reset-to-bootloader support lives in Zephyr's platform
+          # layer and is unchanged.
+          - name: holyiot-nrf52840-dongle
+            board: nrf52840dongle/nrf52840
+            usb: true
+            legacyusb: true
+            otup: e4d97681c53ec1cc34af1404ad2960adda4ba691
+            suffix: -legacyusb-otupstream
+            board_overlay: ''
+            uart: ''
+            baud: 0
+            flow: n
+
           # Ebyte E73 (nRF52840); MCUboot variants are signed with ECDSA P-256.
           - name: ebyte-e73-nrf52840
             board: nrf52840dk/nrf52840
@@ -135,7 +150,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ncs
-          key: ncs-${{ env.NCS_VERSION }}
+          key: ncs-${{ env.NCS_VERSION }}${{ matrix.otup && '-otup' || '' }}
 
       - name: Cache ccache
         uses: actions/cache@v6
@@ -155,12 +170,20 @@ jobs:
 
       - name: Get OpenThread revision
         id: otrev
-        if: ${{ !matrix.ncs }}   # release naming follows the default NCS version only
+        if: ${{ !matrix.ncs && !matrix.otup }}   # release naming follows the default NCS version and Nordic's OpenThread only
         working-directory: ncs
         run: |
           SHA=$(west list -f '{sha}' openthread | cut -c1-7)
           echo "ot_sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "OpenThread revision: $SHA"
+
+      - name: Use upstream OpenThread (experiment)
+        if: ${{ matrix.otup }}
+        working-directory: ncs/modules/lib/openthread
+        run: |
+          git fetch --no-tags --depth=1 https://github.com/openthread/openthread ${{ matrix.otup }}
+          git checkout --detach ${{ matrix.otup }}
+          echo "OpenThread now at $(git rev-parse --short HEAD) (upstream)"
 
       - name: Generate UART devicetree overlay
         if: ${{ !matrix.usb }}
@@ -237,7 +260,10 @@ jobs:
             EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
           else
             # Holyiot dongle: external PA/LNA front-end control (without it the PA pins are not driven)
-            EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.overlay -DEXTRA_CONF_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.conf"
+            CONFS="$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.conf"
+            # Upstream OpenThread needs ASN.1 parsing in mbedTLS (the fork does not)
+            [ -z "${{ matrix.otup }}" ] || CONFS="$CONFS;$GITHUB_WORKSPACE/ot-rcp/boards/openthread-upstream.conf"
+            EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.overlay -DEXTRA_CONF_FILE=$CONFS"
           fi
 
           LAUNCHER=""

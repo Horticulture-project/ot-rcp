@@ -136,3 +136,21 @@ Zephyr: both pins are plain upstream OpenThread commits on main.
 OTBR: no ot-br-posix commit pins either Zephyr revision exactly.
 * OTBR v2026.10.0 pins upstream OpenThread cb18e0f, which is 24 commits after the Zephyr 4.5 pin.
 * OTBR v2026.09.0 is 37 commits before it.
+## Building the NCS RCP against upstream OpenThread (experiment, 2026-10-31)
+
+CI variant `rcp-holyiot-nrf52840-dongle-usb-legacyusb-otupstream` builds the same dongle firmware with plain
+`openthread/openthread` instead of Nordic's `sdk-openthread` fork (west project `openthread`, replaced after
+`west update` by a `git checkout` of the pinned SHA, matrix field `otup`).
+
+Local build results on NCS v3.4.1 (nRF52840 dongle, legacy USB conf, FEM conf), all configure/compile/link only, **not run on hardware**:
+
+| OpenThread revision | Result |
+|---|---|
+| `0fe68ff` (NCS fork, default) | builds, 127.9 KB |
+| `cb18e0f` (OTBR v2026.10.0 pin) | CMake error: NCS's `nrf/modules/openthread/CMakeLists.txt` still sets the removed options `OT_WAKEUP_COORDINATOR` / `OT_WAKEUP_END_DEVICE` (upstream now errors on them). Needs a patch of the NCS glue. |
+| `e4d97681c` (the upstream commit Zephyr pins in this NCS) | builds, 128.3 KB, after adding `CONFIG_MBEDTLS_ASN1_PARSE_C=y` ([boards/openthread-upstream.conf](../boards/openthread-upstream.conf)): upstream's new `crypto_platform_psa.cpp` parses ASN.1, which `nrf_security` leaves off |
+
+The upstream build keeps `USB_DEVICE_STACK` + `USB_DEVICE_INITIALIZE_AT_BOOT`, `MPSL_FEM(_SIMPLE_GPIO)`, the FEM devicetree
+node and `OPENTHREAD_PLATFORM_BOOTLOADER_MODE_GPIO` (reset to bootloader). It is 2026-03 upstream, i.e. still not the
+OTBR v2026.10.0 revision (`cb18e0f`), but much closer than the fork's 2024-09 base. Still to test on the Pi:
+`ot-ctl rcp version`, `diag rcpcaps`, Spinel reset to bootloader, stability on a Pi 3 with `otbr-agent` running.
