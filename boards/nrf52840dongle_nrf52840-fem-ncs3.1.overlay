@@ -1,0 +1,34 @@
+/*
+ * Holyiot nRF52840 dongle with external PA/LNA front-end (RFX4201C-style, two control pins).
+ * Variant for NCS v3.1.x (compatible "generic-fem-two-ctrl-pins"); NCS v3.4.x uses the non-ncs3.1 file.
+ * Values supplied by the vendor (NCS 3.1.0 working RCP config):
+ *   CTX (TX path enable) = P0.24, CRX (RX path enable) = P0.22, both active high,
+ *   TX gain 22 dB, RX gain 12 dB, settle times 1 us.
+ * These pins are the stock dongle's UART RX (P0.24) and CTS (P0.22): this build uses USB CDC only.
+ * The sample's own overlay (bootloader-gpios, zephyr,ot-uart) is applied automatically and is not repeated.
+ */
+/ {
+	nrf_radio_fem: rfx4201c {
+		compatible = "generic-fem-two-ctrl-pins";
+		ctx-gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>;
+		crx-gpios = <&gpio0 22 GPIO_ACTIVE_HIGH>;
+		tx-gain-db = <22>;
+		rx-gain-db = <12>;
+		crx-settle-time-us = <1>;
+		ctx-settle-time-us = <1>;
+	};
+};
+
+&radio {
+	fem = <&nrf_radio_fem>;
+};
+
+/*
+ * The stock dongle board enables uart0 with RX on P0.24 and CTS on P0.22 (pull-ups) - the same pins as
+ * CTX/CRX above. While the UART owns them, the FEM driver cannot switch the PA/LNA: received signals
+ * arrive ~-100 dBm at 1 m and energy scans read a flat value on every channel. The vendor's working
+ * config disables uart0 for this reason. Nothing else uses uart0 here (console/shell are not on it).
+ */
+&uart0 {
+	status = "disabled";
+};

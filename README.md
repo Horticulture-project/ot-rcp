@@ -31,11 +31,36 @@ The Host and the RCP communicate over a serial link (UART or USB virtual COM por
 Every time you push to the `main` branch or trigger the workflow manually via **Workflow Dispatch**, GitHub Actions compiles the firmware using Nordic's official NCS v3.4.1 Docker environment.
 
 ### Releases
-Pushes to `main` (or a manual run with **release** ticked) also publish a GitHub release tagged `ncs-<NCS version>_thread-<Thread version>_ot-<OpenThread SHA>`, for example `ncs-v3.4.1_thread-1.4_ot-0fe68ff`. The OpenThread SHA is read from the NCS workspace; the Thread version is set in the workflow's `THREAD_VERSION`. Re-running with the same versions updates the existing release's files.
+Pushes to `main` (or a manual run with **release** ticked) also publish a GitHub release tagged `ncs-<NCS version>_thread-<Thread version>_ot-<OpenThread SHA>`, for example `ncs-v3.4.1_thread-1.4_ot-0fe68ff`. The OpenThread SHA is read from the NCS workspace; the Thread version is set in the workflow's `THREAD_VERSION`. Re-running with the same versions updates the existing release's files (old assets with other names stay); to get a fresh release instead, run the workflow manually with **release** ticked and a **revision** such as `r2`, which is appended to the tag (`...-r2`).
+
+### Holyiot dongle: external PA/LNA front-end
+The Holyiot dongle has an external PA/LNA (RFX4201C-style, two control pins: CTX = P0.24, CRX = P0.22). All dongle builds therefore include [boards/nrf52840dongle_nrf52840-fem.overlay](boards/nrf52840dongle_nrf52840-fem.overlay) and [.conf](boards/nrf52840dongle_nrf52840-fem.conf), taken from the vendor's working NCS 3.1.0 configuration. Without it the radio does not drive the PA pins; an earlier build without it crashed Raspberry Pi 3 hosts once `otbr-agent` started the radio (suspected cause: PA left enabled, high current). These two pins are the stock dongle's UART RX and CTS, so a UART/NCP build on this dongle needs different pins.
+
+The stock dongle board also enables `uart0` on those same two pins (RX P0.24, CTS P0.22); while the UART owns them the
+PA/LNA never switch (symptom: a device 1 m away heard at about -100 dBm, flat -92 dBm energy scan). The FEM overlay
+therefore disables `uart0`, and CI fails the build if it is not disabled. Verified on 2026-10-26: after the fix the
+same device is heard at -41 dBm.
+
+**TX power with the FEM:** a requested TX power means power on air. The radio driver subtracts the PA gain (22 dB) and
+rounds the nRF52840 output *down* to its next supported step, so the achieved power is roughly:
+
+| Requested (dBm) | 0 | 2–5 | 6–9 | 10–13 | 14–17 | 18–21 | 22 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| On air (dBm) | -18 | 2 | 6 | 10 | 14 | 18 | 22 |
+
+The stock default (`CONFIG_OPENTHREAD_DEFAULT_TX_POWER=0`) would give only about -18 dBm, and `ot-ctl txpower` is not
+persisted (after a reflash or restart the RCP is back at its default), so the dongle build sets the default to **16**
+(about 14 dBm on air) in [boards/nrf52840dongle_nrf52840-fem.conf](boards/nrf52840dongle_nrf52840-fem.conf); CI checks
+it. `ot-ctl txpower` shows the requested value, not the achieved one. Mind the regulatory limit (EU 2.4 GHz: 20 dBm
+EIRP, i.e. including antenna gain).
+
+### Holyiot dongle: legacy USB stack
+The dongle is built on NCS v3.4.1 with the *legacy* USB device stack ([boards/nrf52840dongle_nrf52840-legacyusb.conf](boards/nrf52840dongle_nrf52840-legacyusb.conf)), because the sample's new stack (`USB_DEVICE_STACK_NEXT`) hung Raspberry Pi 3 hosts. The legacy stack only starts when `CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y`; without it nothing calls `usb_enable()` and the dongle never appears as a USB device. CI fails the dongle build if that option is missing.
 
 ### Output Artifacts
-Each matrix entry uploads its own artifact (`rcp-<module>-<baud>baud-<flow|noflow>`, or `rcp-holyiot-nrf52840-dongle-usb`) with files named after it (`.hex`, `.bin`, and `-dfu.zip` for the dongle):
+Each matrix entry uploads its own artifact (`rcp-<module>-<baud>baud-<flow|noflow>`, or `rcp-holyiot-nrf52840-dongle-usb-legacyusb`) with files named after it (`.hex`, `.bin`, and `-dfu.zip` for the dongle). The UART modules also have an update-capable `-mcuboot` variant; the plain builds keep their original names and behaviour:
 * `zephyr.hex` / `zephyr.bin` – Raw binaries for hardware programmers (SWD).
+* Ebyte E73 and Ezurio `-mcuboot` builds include MCUboot (serial recovery over the same UART pins): `rcp-<module>-<baud>baud-<flow|noflow>-mcuboot.hex` is the **merged hex (MCUboot + signed application)** for the one-time SWD flash, `...-mcuboot-update.bin` is the signed image for over-the-cable updates and `...-update.bin.sha256` its checksum. No raw `.bin` is published for these variants; the plain builds (no suffix) stay as before. Until a signing secret is configured these are signed with MCUboot's public development key; their file names contain `-DEVKEY` and they must not be shipped. Details: [docss/bootloader_and_update.md](docss/bootloader_and_update.md).
 * `dfu_application.zip` – Holyiot dongle only: update package for the USB DFU bootloader (generated with `nrfutil pkg generate`).
 
 Baud rate and hardware flow control are applied through a generated devicetree overlay (`current-speed` / `hw-flow-control`) on top of the pin overlays in [boards/](boards). RCP mode and the dongle's USB CDC ACM setup come from the NCS `coprocessor` sample itself.
@@ -48,28 +73,40 @@ Baud rate and hardware flow control are applied through a generated devicetree o
 
 This device features a pre-flashed USB bootloader. You do **not** need a hardware programmer.
 
-#### 🍏 Programmatic Reset (No magnet needed!)
-Instead of using a physical magnet or button to force DFU mode, you can trigger a software restart into the bootloader by toggling the serial port at **1200 baud**.
+#### 🍏 Software entry into the bootloader (no button needed)
+The firmware supports the Spinel **reset-to-bootloader** command: the RCP pulls its own reset pin (P0.19) and comes up
+in Nordic's USB DFU bootloader (`lsusb`: `1915:521f Nordic Semiconductor ASA Open DFU Bootloader`). Verified on the
+Holyiot dongle on 2026-10-26. The reset button still works as a fallback.
 
-> **Note:** this only works if the running firmware implements the 1200-baud touch. Stock Zephyr CDC ACM does not, so if the port does not reset, enter DFU mode with the dongle's reset button instead.
+> The older 1200-baud "touch" ([app-extensions/dongle-dfu](app-extensions/dongle-dfu)) is not in the published dongle
+> build; it is not needed any more.
 
 #### 🔸 From Raspberry Pi
-1. Install the required tool: `pip install nrfutil`
-2. Run the automated deployment sequence:
+1. Install [nRF Util](https://www.nordicsemi.com/Products/Development-tools/nrf-util) and its `device` command. On a
+   64-bit Pi (`uname -m` = `aarch64`) this is the only option: Nordic does not publish `nrf5sdk-tools` for 64-bit ARM
+   Linux, and there is no nRF Util build at all for a 32-bit (armv7) OS.
    ```bash
-   # Stop the OTBR daemon to release the port
+   curl -fL -o nrfutil https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/executables/aarch64-unknown-linux-gnu/nrfutil
+   chmod +x nrfutil && sudo mv nrfutil /usr/local/bin/
+   nrfutil install device
+   ```
+2. Update (the guided script [update-tools/dongle/update-dongle.sh](update-tools/dongle/README.md) does the same and
+   verifies the radio afterwards):
+   ```bash
    sudo systemctl stop otbr-agent
 
-   # Trigger DFU mode via 1200 baud trick
-   python3 -c "import serial; serial.Serial('/dev/ttyACM0', 1200).close()"
-   sleep 2
+   # Spinel reset-to-bootloader (USB CDC ignores the baud value)
+   python3 update-tools/dongle/rcp_spinel.py reset-bootloader --port /dev/ttyACM0 --baud 115200
+   nrfutil device list        # note the serial number of the "Open DFU Bootloader"
 
-   # Flash the new zip package
-   nrfutil dfu usb-serial -pkg dfu_application.zip -p /dev/ttyACM0 -b 115200
+   nrfutil device program --serial-number <SN> --traits nordicDfu \
+     --firmware rcp-holyiot-nrf52840-dongle-usb-legacyusb-dfu.zip
 
-   # Restart the router agent
    sudo systemctl start otbr-agent
+   sudo ot-ctl rcp version    # new build date
+   sudo ot-ctl txpower        # 16 by default (see the TX power note)
    ```
+   On x86-64 Linux `nrfutil nrf5sdk-tools dfu usb-serial -pkg <zip> -p <tty> -b 115200` works as well.
 
 #### 🔸 From Windows
 1. Download and install [nRF Connect for Desktop](https://nordicsemi.com).
@@ -88,6 +125,8 @@ Instead of using a physical magnet or button to force DFU mode, you can trigger 
 ### 2. Ebyte E73 (nRF52840) & Ezurio (nRF54L15) via SWD
 
 These bare modules do not expose a native USB interface for flashing and require direct **Serial Wire Debug (SWD)** connection lines.
+
+> The first flash of a module must use the merged `rcp-<module>-...hex` (it contains MCUboot and puts the application at 0xC000 on the E73 and 0x10000 on the Ezurio). Use a full chip erase. Afterwards updates can go over the UART, see section 3.
 
 #### 📌 Pin Mapping Diagram
 Connect your programmer (or Raspberry Pi GPIO pins) to the modules as follows:
@@ -137,6 +176,20 @@ To flash these boards from a Windows environment, you need an external hardware 
    nrfutil device program --firmware zephyr.hex --options chip_erase_mode=ERASE_ALL,verify=VERIFY_READ --traits jlink
    nrfutil device reset
    ```
+
+### 3. Ebyte E73 & Ezurio: updating over the UART (MCUboot serial recovery)
+
+**Not built or tested on hardware yet.** Outline (full procedure, exact commands, timeouts and failure modes in [docss/bootloader_and_update.md](docss/bootloader_and_update.md), section "HOST CONTRACT"):
+
+1. `sudo systemctl stop otbr-agent`
+2. Send the Spinel reset-to-bootloader frame `7E 81 01 03 BF BB 7E` at the application's baud rate (or `ot-ctl reset bootloader` if your otbr-agent was built with `OT_PLATFORM_BOOTLOADER_MODE=ON`). The module reboots into MCUboot.
+3. MCUboot speaks MCUmgr/SMP at **115200 8N1, no flow control**, regardless of the application's baud rate. Probe with `mcumgr-client -s -d /dev/ttyAMA0 -b 115200 -t 2 echo ping`.
+4. `mcumgr-client -d /dev/ttyAMA0 -t 10 -u 500 --nb-retry 8 upload rcp-<module>-...-update.bin --slot 2`, then `list`, `test <hash>` and `reset`.
+5. `sudo systemctl start otbr-agent` and check `ot-ctl rcp version`.
+
+There is no automatic rollback (the RCP has no MCUmgr server to confirm an image); keep the previous `-update.bin`. Signing keys are generated with `imgtool keygen` and stored as the GitHub secrets `MCUBOOT_SIGN_KEY_ECDSA_P256` (E73) and `MCUBOOT_SIGN_KEY_ED25519` (Ezurio); never commit them.
+
+---
 
 ## 🎛 UART Pin Mapping & Flow Control
 

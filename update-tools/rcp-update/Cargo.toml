@@ -1,0 +1,20 @@
+[package]
+name = "rcp-update"
+version = "0.1.0"
+edition = "2021"
+description = "Serial helper for the RCP update scripts: 1200-baud touch, Spinel reset-to-bootloader, SMP echo probe, Spinel version query"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+# default-features = false drops the `libudev` feature: no libudev-sys, so a fully static musl build
+# works. Ports are opened by path and USB VID:PID lookup is done by this crate through sysfs.
+serialport = { version = "4.8", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

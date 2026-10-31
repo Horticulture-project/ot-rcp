@@ -1,0 +1,23 @@
+config DONGLE_DFU_TOUCH
+	bool "Reboot into the USB DFU bootloader on a 1200-baud touch of the CDC ACM port"
+	default y
+	depends on UART_LINE_CTRL
+	select REBOOT
+	help
+	  The module is only added to the build for the Holyiot nRF52840 dongle, so this
+	  defaults to y. When the host sets the line coding to DONGLE_DFU_TOUCH_BAUD and
+	  then drops DTR (open and close the port), the bootloader magic is written to
+	  GPREGRET and the chip does a warm reset.
+
+if DONGLE_DFU_TOUCH
+
+config DONGLE_DFU_TOUCH_BAUD
+	int "Trigger baud rate"
+	default 1200
+
+config DONGLE_DFU_GPREGRET_MAGIC
+	hex "Value written to GPREGRET[0] (Nordic open bootloader: 0xB1 = DFU start)"
+	default 0xB1
+	range 0 0xFF
+
+endif # DONGLE_DFU_TOUCH
