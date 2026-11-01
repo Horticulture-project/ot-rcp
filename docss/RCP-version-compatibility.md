@@ -185,3 +185,17 @@ Attach strace before the agent starts, because the keys are set during init.
 
 Also tried: Zephyr's own coprocessor sample (Zephyr platform layer, no `radio_nrf5.c`) against `cb18e0f`. It builds and runs but showed the same aborts, so that platform layer needs an equivalent fix and was not pursued
 (branch `zephyr-upstream-rcp`).
+
+## Release automation: RCP matching an ot-br-posix release
+
+[.github/workflows/release-otbr-match.yml](../.github/workflows/release-otbr-match.yml) builds the Holyiot dongle RCP against upstream OpenThread at the commit that an
+ot-br-posix release pins (`third_party/openthread/repo`) and publishes it as a GitHub release
+`ncs-<NCS>_otbr-<tag>_ot-<sha7>` (for example `ncs-v3.4.1_otbr-v2026.10.0_ot-cb18e0f`).
+
+- A daily check picks the newest `vYYYY.MM.N` tag of ot-br-posix (they are released monthly) and builds it if its release does not exist yet.
+- `workflow_dispatch` takes an explicit `otbr_tag`, a `revision` suffix (`r2`) and `force` to rebuild an existing release.
+- The build fails (nothing is published) if the firmware's version string does not carry the pinned OpenThread commit, if the PSA slot count is below 3, or if the FEM/USB settings dropped out.
+- Per-release notes (what was verified on hardware) come from `release-notes/otbr-<tag>.md` if that file exists.
+- GitHub runs `schedule` and lists `workflow_dispatch` only for workflow files on the default branch (`main`). Until the file is merged there, a push to `ncs_ot-upstream`
+  builds `PUSH_OTBR_TAG` (a no-op once that release exists). After the merge, remove that bootstrap.
+- A new OpenThread release can need new patches (the NCS platform glue is tied to NCS 3.4.1). If it does not build, the run fails and nothing is released.

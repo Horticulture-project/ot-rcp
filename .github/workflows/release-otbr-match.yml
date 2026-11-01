@@ -1,0 +1,216 @@
+name: Release RCP matching OTBR-posix (upstream OpenThread)
+
+# Builds the Holyiot dongle RCP against UPSTREAM OpenThread at the exact commit that an ot-br-posix release pins
+# (third_party/openthread/repo), so the RCP and otbr-agent run the same OpenThread revision, and publishes it as a
+# GitHub release. ot-br-posix releases monthly (vYYYY.MM.0); a new tag is picked up by the daily check.
+#
+# NOTE: GitHub only runs `schedule` (and lists `workflow_dispatch`) for workflow files on the DEFAULT branch.
+# Until this file is merged to main, the only trigger is a push to ncs_ot-upstream (see PUSH_OTBR_TAG).
+# Background and the patch/config this build depends on: docss/RCP-version-compatibility.md
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      otbr_tag:
+        description: ot-br-posix release tag to match (empty = latest vYYYY.MM.N)
+        type: string
+        default: ''
+      revision:
+        description: Optional revision suffix (e.g. r2) appended to the release tag
+        type: string
+        default: ''
+      force:
+        description: Rebuild and update the release even if it already exists
+        type: boolean
+        default: false
+  push:
+    branches: [ ncs_ot-upstream ]
+    paths: [ '.github/workflows/release-otbr-match.yml' ]
+
+permissions:
+  contents: read
+
+env:
+  NCS_VERSION: v3.4.1          # also hard-coded in the container image below (env is not allowed there)
+  THREAD_VERSION: "1.4"
+  # Bootstrap for pushes to ncs_ot-upstream (no inputs on push): build this OTBR release. A no-op once its release exists.
+  PUSH_OTBR_TAG: v2026.10.0
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      skip: ${{ steps.r.outputs.skip }}
+      otbr_tag: ${{ steps.r.outputs.otbr_tag }}
+      ot_sha: ${{ steps.r.outputs.ot_sha }}
+      ot_short: ${{ steps.r.outputs.ot_short }}
+      release_tag: ${{ steps.r.outputs.release_tag }}
+    steps:
+      - name: Resolve OTBR release, its OpenThread commit and the release tag
+        id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.otbr_tag }}
+          INPUT_REV: ${{ inputs.revision }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            if [ "${{ github.event_name }}" = "push" ]; then
+              TAG="$PUSH_OTBR_TAG"
+            else
+              TAG=$(git ls-remote --tags --refs https://github.com/openthread/ot-br-posix \
+                      | sed 's#.*refs/tags/##' | grep -E '^v[0-9]{4}\.[0-9]{2}\.[0-9]+$' | sort -V | tail -n1)
+            fi
+          fi
+          [[ "$TAG" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]+$ ]] || { echo "::error::bad OTBR tag '$TAG'"; exit 1; }
+          [[ -z "$INPUT_REV" || "$INPUT_REV" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::bad revision"; exit 1; }
+
+          # The submodule pin of OpenThread in that ot-br-posix release.
+          OT_SHA=$(gh api "repos/openthread/ot-br-posix/contents/third_party/openthread/repo?ref=$TAG" --jq '.sha')
+          [[ "$OT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve the OpenThread pin of $TAG"; exit 1; }
+          SHORT=${OT_SHA:0:7}
+          REL="ncs-${NCS_VERSION}_otbr-${TAG}_ot-${SHORT}${INPUT_REV:+-$INPUT_REV}"
+
+          SKIP=false
+          if gh release view "$REL" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && [ "$INPUT_FORCE" != "true" ]; then
+            SKIP=true
+          fi
+          {
+            echo "skip=$SKIP"; echo "otbr_tag=$TAG"; echo "ot_sha=$OT_SHA"; echo "ot_short=$SHORT"; echo "release_tag=$REL"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice title=OTBR $TAG::OpenThread $OT_SHA, release tag $REL, skip=$SKIP"
+
+  build-release:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.4.1
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: write
+    env:
+      OTBR_TAG: ${{ needs.resolve.outputs.otbr_tag }}
+      OT_SHA: ${{ needs.resolve.outputs.ot_sha }}
+      OT_SHORT: ${{ needs.resolve.outputs.ot_short }}
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          path: ot-rcp
+
+      - name: Initialize west workspace
+        run: |
+          west init -m https://github.com/nrfconnect/sdk-nrf --mr "${NCS_VERSION}" ncs
+          cd ncs
+          west update --narrow -o=--depth=1
+          west zephyr-export
+
+      - name: Use upstream OpenThread at the OTBR pin
+        working-directory: ncs/modules/lib/openthread
+        run: |
+          git fetch --no-tags --depth=1 https://github.com/openthread/openthread "$OT_SHA"
+          git checkout --detach "$OT_SHA"
+          echo "OpenThread now at $(git rev-parse --short HEAD) (upstream, pinned by ot-br-posix $OTBR_TAG)"
+          cd "$GITHUB_WORKSPACE/ncs"
+          # Upstream removed OT_WAKEUP_COORDINATOR/OT_WAKEUP_END_DEVICE; NCS v3.4.1 still sets them.
+          sed -i 's/ OT_WAKEUP_COORDINATOR "/ OT_WAKE_INITIATOR "/; s/ OT_WAKEUP_END_DEVICE "/ OT_WAKE_LISTENER "/' \
+            nrf/modules/openthread/CMakeLists.txt zephyr/modules/openthread/CMakeLists.txt
+          grep -n "OT_WAKE_" nrf/modules/openthread/CMakeLists.txt zephyr/modules/openthread/CMakeLists.txt
+          # Key ID mode / MAC key handling in the nRF platform glue (see docss/RCP-version-compatibility.md)
+          git -C nrf apply "$GITHUB_WORKSPACE/ot-rcp/patches/ncs-radio_nrf5-upstream-openthread.patch"
+
+      - name: Build RCP firmware (Holyiot dongle)
+        working-directory: ncs
+        run: |
+          APP=nrf/samples/openthread/coprocessor
+          # Legacy USB stack: copy the sample and swap in the legacy-USB board conf (folder must stay "coprocessor").
+          mkdir -p "$RUNNER_TEMP/legacyusb"
+          cp -r "$APP" "$RUNNER_TEMP/legacyusb/coprocessor"
+          cp "$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-legacyusb.conf" \
+             "$RUNNER_TEMP/legacyusb/coprocessor/boards/nrf52840dongle_nrf52840.conf"
+          APP="$RUNNER_TEMP/legacyusb/coprocessor"
+          CONFS="$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.conf;$GITHUB_WORKSPACE/ot-rcp/boards/openthread-upstream.conf"
+          EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.overlay -DEXTRA_CONF_FILE=$CONFS"
+          set +e
+          west build -b nrf52840dongle/nrf52840 $APP -d build -p always -- $EXTRA 2>&1 | tee "$RUNNER_TEMP/build.log"
+          RC=${PIPESTATUS[0]}
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            { grep -E "undefined reference|multiple definition|cannot find|overflowed|will not fit" "$RUNNER_TEMP/build.log" | sort -u | head -7
+              grep -E "CMake Error|Kconfig|assigned the value|fatal error|error:" "$RUNNER_TEMP/build.log" | grep -v "collect2" | head -3
+            } | while IFS= read -r l; do echo "::error::${l:0:380}"; done
+            exit "$RC"
+          fi
+
+      - name: Verify configuration and OpenThread revision
+        run: |
+          CFG=ncs/build/coprocessor/zephyr/.config
+          for o in CONFIG_MPSL_FEM=y CONFIG_MPSL_FEM_SIMPLE_GPIO=y CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y \
+                   CONFIG_OPENTHREAD_DEFAULT_TX_POWER=16 CONFIG_OPENTHREAD_PLATFORM_KEY_REF=y; do
+            grep -qx "$o" "$CFG" || { echo "::error::$o missing from $CFG"; exit 1; }
+          done
+          # Three PSA slots hold the prev/curr/next MAC keys; fewer makes the radio get all-zero keys (silent failure).
+          SLOTS=$(sed -n 's/^CONFIG_MBEDTLS_PSA_KEY_SLOT_COUNT=//p' "$CFG")
+          [ "${SLOTS:-0}" -ge 3 ] || { echo "::error::CONFIG_MBEDTLS_PSA_KEY_SLOT_COUNT=${SLOTS:-unset}, need >= 3"; exit 1; }
+          UART0_STATUS=$(awk '/uart0: uart@/{f=1} f&&/status =/{print; exit}' ncs/build/coprocessor/zephyr/zephyr.dts)
+          echo "$UART0_STATUS" | grep -q '"disabled"' || { echo "::error::uart0 is not disabled (it owns the FEM pins)"; exit 1; }
+          # The firmware must report the OpenThread commit that OTBR pins ("OPENTHREAD/<sha9>; Zephyr; <date>").
+          VER=$(grep -a -o -m1 "OPENTHREAD/[0-9a-f]*; Zephyr; [A-Za-z0-9: ]*" ncs/build/coprocessor/zephyr/zephyr.elf | head -n1 || true)
+          echo "RCP version string: $VER"
+          case "$VER" in "OPENTHREAD/$OT_SHORT"*) ;; *) echo "::error::RCP version '$VER' does not match OpenThread $OT_SHORT"; exit 1;; esac
+          grep -q '^#define NCS_VERSION_STRING' ncs/build/coprocessor/zephyr/include/generated/ncs_version.h
+          grep NCS_VERSION_STRING ncs/build/coprocessor/zephyr/include/generated/ncs_version.h
+          echo "RCP_VERSION=$VER" >> "$GITHUB_ENV"
+
+      - name: Package DFU zip
+        run: |
+          export NRFUTIL_HOME="$RUNNER_TEMP/nrfutil-home"
+          nrfutil install nrf5sdk-tools
+          nrfutil nrf5sdk-tools pkg generate --hw-version 52 --sd-req 0x00 --sd-id 0x00 \
+            --application ncs/build/coprocessor/zephyr/zephyr.hex --application-version 1 ncs/build/dfu_application.zip
+
+      - name: Collect release files
+        run: |
+          BASE=holyiot-nrf52840-dongle-usb-legacyusb-otupstream
+          mkdir -p out
+          cp ncs/build/coprocessor/zephyr/zephyr.hex "out/rcp-$BASE.hex"
+          cp ncs/build/coprocessor/zephyr/zephyr.bin "out/rcp-$BASE.bin"
+          cp ncs/build/dfu_application.zip "out/rcp-$BASE-dfu.zip"
+          cp ncs/build/coprocessor/zephyr/.config "out/rcp-$BASE-zephyr.config"
+          (cd out && sha256sum rcp-$BASE.hex rcp-$BASE.bin rcp-$BASE-dfu.zip > SHA256SUMS)
+          {
+            echo "OpenThread RCP firmware matching ot-br-posix $OTBR_TAG"
+            echo
+            echo "- Holyiot nRF52840 dongle (USB CDC ACM, legacy USB stack, Nordic Open DFU bootloader, app at 0x1000)"
+            echo "- nRF Connect SDK ${NCS_VERSION} (Zephyr 4.4.2), Thread ${THREAD_VERSION}"
+            echo "- OpenThread $OT_SHA (upstream, pinned by ot-br-posix $OTBR_TAG), NOT Nordic's sdk-openthread fork"
+            echo "- RCP version string: $RCP_VERSION"
+            echo "- Built from commit ${GITHUB_SHA}"
+            echo
+            echo "Flash with the DFU zip (nrfutil device program --traits nordicDfu) after the RCP is switched to the bootloader."
+            echo
+            echo "Changes needed to run upstream OpenThread on NCS ${NCS_VERSION}: patches/ncs-radio_nrf5-upstream-openthread.patch,"
+            echo "boards/openthread-upstream.conf, and the wake-up option rename. Details: docss/RCP-version-compatibility.md."
+            NOTES="ot-rcp/release-notes/otbr-${OTBR_TAG}.md"
+            if [ -f "$NOTES" ]; then echo; cat "$NOTES"; else
+              echo; echo "Built automatically for this OTBR release; not yet tested on hardware."
+            fi
+          } > release-body.md
+          cat release-body.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: RCP firmware (upstream OpenThread) - matches OTBR ${{ env.OTBR_TAG }} - NCS ${{ env.NCS_VERSION }} / OpenThread ${{ env.OT_SHORT }}
+          target_commitish: ${{ github.sha }}
+          body_path: release-body.md
+          files: out/*
