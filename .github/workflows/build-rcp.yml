@@ -2,7 +2,7 @@ name: Build OpenThread RCP Firmware
 
 on:
   push:
-    branches: [ main, Zephyr-ncp, test_field_update ]
+    branches: [ main, Zephyr-ncp, test_field_update, ncs_ot-upstream ]
   workflow_dispatch:
     inputs:
       release:
