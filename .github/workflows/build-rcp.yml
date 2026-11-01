@@ -189,6 +189,10 @@ jobs:
           cd "$GITHUB_WORKSPACE/ncs"
           sed -i 's/ OT_WAKEUP_COORDINATOR "/ OT_WAKE_INITIATOR "/; s/ OT_WAKEUP_END_DEVICE "/ OT_WAKE_LISTENER "/'             nrf/modules/openthread/CMakeLists.txt zephyr/modules/openthread/CMakeLists.txt
           grep -n "OT_WAKE_" nrf/modules/openthread/CMakeLists.txt zephyr/modules/openthread/CMakeLists.txt
+          # Upstream passes a plain key ID mode to otPlatRadioSetMacKey (platform must ignore it); the NCS glue did
+          # `aKeyIdMode >> 3`, treated every call as "clear keys", and every secured TX failed (KEY_ID_INVALID -> Abort).
+          # Also tolerates an unset prev/next key reference. See docss/RCP-version-compatibility.md.
+          git -C nrf apply "$GITHUB_WORKSPACE/patches/ncs-radio_nrf5-upstream-openthread.patch"
 
       - name: Generate UART devicetree overlay
         if: ${{ !matrix.usb }}

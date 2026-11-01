@@ -153,3 +153,22 @@ Local build results on NCS v3.4.1 (nRF52840 dongle, legacy USB conf, FEM conf), 
 The upstream build keeps `USB_DEVICE_STACK` + `USB_DEVICE_INITIALIZE_AT_BOOT`, `MPSL_FEM(_SIMPLE_GPIO)`, the FEM devicetree
 node and `OPENTHREAD_PLATFORM_BOOTLOADER_MODE_GPIO` (reset to bootloader). The CI variant now uses `cb18e0f`, i.e. the same OpenThread source as OTBR-posix v2026.10.0 (the fork's base is from 2024-09). Still to test on the Pi:
 `ot-ctl rcp version`, `diag rcpcaps`, Spinel reset to bootloader, stability on a Pi 3 with `otbr-agent` running.
+
+### Result on hardware (Pi 3, OTBR 0.3.0-cb4bdae, 2026-11-01)
+
+Plain `cb18e0f` + the two changes above runs and reports `OPENTHREAD/cb18e0f59`, but **all MAC-secured unicast TX aborted**
+(`TxErrAbort`, about 90 %), so the node dropped out of the mesh and CoAP data stopped. Usable only with the patch below.
+
+Cause, found by printing the nRF 802.15.4 driver's TX error and the key calls over the USB console:
+
+- The driver reported `NRF_802154_TX_ERROR_KEY_ID_INVALID` (8). The NCS glue maps every unknown TX error to `OT_ERROR_ABORT`, which hid it.
+- Upstream now passes a plain key ID mode (the RCP sends `1`) to `otPlatRadioSetMacKey()`, and documents it as "must be ignored by the radio platform".
+  NCS's `radio_nrf5.c` does `aKeyIdMode >> 3`, gets 0, treats the call as "clear all keys" and never stores them. The driver then has no key for any secured frame.
+- Upstream can also pass an unset prev/next key reference, so `otPlatCryptoExportKey()` fails for it (the `__ASSERT` fired in a build with asserts on).
+
+Fix: [patches/ncs-radio_nrf5-upstream-openthread.patch](../patches/ncs-radio_nrf5-upstream-openthread.patch) (applied by the CI `otup` step): key index 0 clears, anything else is mode 1;
+prev/next fall back to the current key if their reference can't be exported. With it: 26 of 27 TX acked, no `otbr-agent` restarts, RCP and OTBR on the same OpenThread revision.
+Not yet verified: a long soak, `diag rcpcaps`, mesh data flow over hours, Spinel reset to bootloader with this build, and the CI build.
+
+Also tried: Zephyr's own coprocessor sample (Zephyr platform layer, no `radio_nrf5.c`) against `cb18e0f`. It builds and runs but showed the same aborts, so that platform layer needs an equivalent fix and was not pursued
+(branch `zephyr-upstream-rcp`).
