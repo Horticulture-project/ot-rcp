@@ -1,12 +1,13 @@
 name: Release RCP matching OTBR-posix (upstream OpenThread)
 
-# Builds the Holyiot dongle RCP against UPSTREAM OpenThread at the exact commit that an ot-br-posix release pins
-# (third_party/openthread/repo), so the RCP and otbr-agent run the same OpenThread revision, and publishes it as a
-# GitHub release. ot-br-posix releases monthly (vYYYY.MM.0); a new tag is picked up by the daily check.
+# Builds the RCP firmware for all device types against UPSTREAM OpenThread at the exact commit that an ot-br-posix
+# release pins (third_party/openthread/repo), so the RCP and otbr-agent run the same OpenThread revision, and publishes
+# it as a GitHub release. ot-br-posix releases monthly (vYYYY.MM.0); a new tag is picked up by the daily check.
 #
 # NOTE: GitHub only runs `schedule` (and lists `workflow_dispatch`) for workflow files on the DEFAULT branch.
-# Until this file is merged to main, the only trigger is a push to ncs_ot-upstream (see PUSH_OTBR_TAG).
-# Background and the patch/config this build depends on: docss/RCP-version-compatibility.md
+# Until this file is merged to main, the only trigger is a push to ncs_ot-upstream (see PUSH_OTBR_TAG / PUSH_FORCE).
+# The build steps mirror build-rcp.yml (keep them in sync). Background, and the patch/config this build depends on:
+# docss/RCP-version-compatibility.md
 
 on:
   schedule:
@@ -35,8 +36,11 @@ permissions:
 env:
   NCS_VERSION: v3.4.1          # also hard-coded in the container image below (env is not allowed there)
   THREAD_VERSION: "1.4"
-  # Bootstrap for pushes to ncs_ot-upstream (no inputs on push): build this OTBR release. A no-op once its release exists.
+  # Bootstrap for pushes to ncs_ot-upstream (no inputs on push): build this OTBR release, and update its release even
+  # though it exists (a push only happens when this file changed, e.g. a new device type was added). Remove after the
+  # workflow is merged to main.
   PUSH_OTBR_TAG: v2026.10.0
+  PUSH_FORCE: 'true'
 
 jobs:
   resolve:
@@ -58,9 +62,10 @@ jobs:
         run: |
           set -euo pipefail
           TAG="$INPUT_TAG"
+          FORCE="$INPUT_FORCE"
           if [ -z "$TAG" ]; then
             if [ "${{ github.event_name }}" = "push" ]; then
-              TAG="$PUSH_OTBR_TAG"
+              TAG="$PUSH_OTBR_TAG"; FORCE="$PUSH_FORCE"
             else
               TAG=$(git ls-remote --tags --refs https://github.com/openthread/ot-br-posix \
                       | sed 's#.*refs/tags/##' | grep -E '^v[0-9]{4}\.[0-9]{2}\.[0-9]+$' | sort -V | tail -n1)
@@ -76,7 +81,7 @@ jobs:
           REL="ncs-${NCS_VERSION}_otbr-${TAG}_ot-${SHORT}${INPUT_REV:+-$INPUT_REV}"
 
           SKIP=false
-          if gh release view "$REL" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && [ "$INPUT_FORCE" != "true" ]; then
+          if gh release view "$REL" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && [ "$FORCE" != "true" ]; then
             SKIP=true
           fi
           {
@@ -84,7 +89,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "::notice title=OTBR $TAG::OpenThread $OT_SHA, release tag $REL, skip=$SKIP"
 
-  build-release:
+  build:
     needs: resolve
     if: ${{ needs.resolve.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
@@ -93,13 +98,101 @@ jobs:
     defaults:
       run:
         shell: bash
-    permissions:
-      contents: write
     env:
       OTBR_TAG: ${{ needs.resolve.outputs.otbr_tag }}
       OT_SHA: ${{ needs.resolve.outputs.ot_sha }}
       OT_SHORT: ${{ needs.resolve.outputs.ot_short }}
-      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Holyiot dongle: USB CDC ACM, legacy USB stack (see build-rcp.yml).
+          - name: holyiot-nrf52840-dongle
+            board: nrf52840dongle/nrf52840
+            usb: true
+            suffix: -legacyusb-otupstream
+            board_overlay: ''
+            uart: ''
+            baud: 0
+            flow: n
+
+          # Ebyte E73 (nRF52840); MCUboot variants are signed with ECDSA P-256.
+          - name: ebyte-e73-nrf52840
+            board: nrf52840dk/nrf52840
+            usb: false
+            board_overlay: nrf52840dk_nrf52840.overlay
+            uart: uart0
+            baud: 115200
+            flow: n
+            suffix: -otupstream
+          - name: ebyte-e73-nrf52840
+            board: nrf52840dk/nrf52840
+            usb: false
+            board_overlay: nrf52840dk_nrf52840.overlay
+            uart: uart0
+            baud: 460800
+            flow: y
+            suffix: -otupstream
+          - name: ebyte-e73-nrf52840
+            board: nrf52840dk/nrf52840
+            usb: false
+            board_overlay: nrf52840dk_nrf52840.overlay
+            uart: uart0
+            baud: 115200
+            flow: n
+            mcuboot: true
+            mcuboot_sig: ecdsa-p256
+            suffix: -mcuboot-otupstream
+          - name: ebyte-e73-nrf52840
+            board: nrf52840dk/nrf52840
+            usb: false
+            board_overlay: nrf52840dk_nrf52840.overlay
+            uart: uart0
+            baud: 460800
+            flow: y
+            mcuboot: true
+            mcuboot_sig: ecdsa-p256
+            suffix: -mcuboot-otupstream
+
+          # Ezurio (nRF54L15): generic nRF54L15 (DK board definition + our pin overlay); MCUboot variants use Ed25519.
+          - name: ezurio-nrf54l15
+            board: nrf54l15dk/nrf54l15/cpuapp
+            usb: false
+            board_overlay: nrf54l15dk_nrf54l15_cpuapp.overlay
+            uart: uart20
+            baud: 115200
+            flow: n
+            suffix: -otupstream
+          - name: ezurio-nrf54l15
+            board: nrf54l15dk/nrf54l15/cpuapp
+            usb: false
+            board_overlay: nrf54l15dk_nrf54l15_cpuapp.overlay
+            uart: uart20
+            baud: 460800
+            flow: y
+            suffix: -otupstream
+          - name: ezurio-nrf54l15
+            board: nrf54l15dk/nrf54l15/cpuapp
+            usb: false
+            board_overlay: nrf54l15dk_nrf54l15_cpuapp.overlay
+            uart: uart20
+            baud: 115200
+            flow: n
+            mcuboot: true
+            mcuboot_sig: ed25519
+            suffix: -mcuboot-otupstream
+          - name: ezurio-nrf54l15
+            board: nrf54l15dk/nrf54l15/cpuapp
+            usb: false
+            board_overlay: nrf54l15dk_nrf54l15_cpuapp.overlay
+            uart: uart20
+            baud: 460800
+            flow: y
+            mcuboot: true
+            mcuboot_sig: ed25519
+            suffix: -mcuboot-otupstream
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -127,20 +220,80 @@ jobs:
           # Key ID mode / MAC key handling in the nRF platform glue (see docss/RCP-version-compatibility.md)
           git -C nrf apply "$GITHUB_WORKSPACE/ot-rcp/patches/ncs-radio_nrf5-upstream-openthread.patch"
 
-      - name: Build RCP firmware (Holyiot dongle)
+      - name: Generate UART devicetree overlay
+        if: ${{ !matrix.usb }}
+        run: |
+          {
+            echo "&${{ matrix.uart }} {"
+            echo "    current-speed = <${{ matrix.baud }}>;"
+            if [ "${{ matrix.flow }}" = "y" ]; then
+              echo "    hw-flow-control;"
+            else
+              echo "    /delete-property/ hw-flow-control;"
+            fi
+            echo "};"
+          } > "$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
+          cat "$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
+
+      - name: Prepare MCUboot variant (signing key, sysbuild and app config)
+        if: ${{ matrix.mcuboot }}
+        env:
+          # PEM private keys, see docss/bootloader_and_update.md ("Signing keys"). Never commit them.
+          KEY_ECDSA_P256: ${{ secrets.MCUBOOT_SIGN_KEY_ECDSA_P256 }}
+          KEY_ED25519: ${{ secrets.MCUBOOT_SIGN_KEY_ED25519 }}
+        run: |
+          set -eu
+          CFG="$GITHUB_WORKSPACE/ot-rcp/mcuboot"
+          SIGN_FRAGMENT="$GITHUB_WORKSPACE/overlay-sysbuild-sign.conf"
+          if [ "${{ matrix.mcuboot_sig }}" = "ed25519" ]; then KEY_PEM="$KEY_ED25519"; else KEY_PEM="$KEY_ECDSA_P256"; fi
+          : > "$SIGN_FRAGMENT"
+          if [ -n "$KEY_PEM" ]; then
+            KEY_FILE="$RUNNER_TEMP/mcuboot-sign-key.pem"
+            ( umask 077; printf '%s\n' "$KEY_PEM" > "$KEY_FILE" )
+            grep -q 'PRIVATE KEY' "$KEY_FILE" || { echo "::error::MCUboot signing secret is not a PEM private key"; exit 1; }
+            echo "SB_CONFIG_BOOT_SIGNATURE_KEY_FILE=\"$KEY_FILE\"" > "$SIGN_FRAGMENT"
+            echo "MCUBOOT_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+            echo "MCUBOOT_DEVKEY=n" >> "$GITHUB_ENV"
+          else
+            echo "::warning::MCUBOOT_SIGN_KEY_* secret not set: signing with MCUboot's PUBLIC development key (INSECURE). Files are named *-DEVKEY*. Do not ship modules built this way."
+            echo "MCUBOOT_DEVKEY=y" >> "$GITHUB_ENV"
+          fi
+          # MCUboot serial recovery UART: same pins as the application, fixed baud rate, no flow control.
+          {
+            echo "&${{ matrix.uart }} {"
+            echo "    current-speed = <${{ matrix.mcuboot_baud || 115200 }}>;"
+            echo "};"
+          } > "$GITHUB_WORKSPACE/overlay-mcuboot-uart.overlay"
+          cat "$GITHUB_WORKSPACE/overlay-mcuboot-uart.overlay"
+          echo "CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION=\"1.0.0+${GITHUB_RUN_NUMBER}\"" > "$GITHUB_WORKSPACE/overlay-app-version.conf"
+          # Same as build-rcp.yml, plus the upstream-OpenThread Kconfig in the main image's config list.
+          UPCONF="$GITHUB_WORKSPACE/ot-rcp/boards/openthread-upstream.conf"
+          echo "MCUBOOT_ARGS=-DSB_EXTRA_CONF_FILE=$CFG/sysbuild.conf;$CFG/sysbuild-${{ matrix.mcuboot_sig }}.conf;$SIGN_FRAGMENT -DEXTRA_CONF_FILE=$CFG/app.conf;$GITHUB_WORKSPACE/overlay-app-version.conf;$UPCONF -Dmcuboot_EXTRA_CONF_FILE=$CFG/mcuboot.conf -Dmcuboot_EXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-mcuboot-uart.overlay" >> "$GITHUB_ENV"
+
+      - name: Build RCP firmware
         working-directory: ncs
         run: |
           APP=nrf/samples/openthread/coprocessor
-          # Legacy USB stack: copy the sample and swap in the legacy-USB board conf (folder must stay "coprocessor").
-          mkdir -p "$RUNNER_TEMP/legacyusb"
-          cp -r "$APP" "$RUNNER_TEMP/legacyusb/coprocessor"
-          cp "$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-legacyusb.conf" \
-             "$RUNNER_TEMP/legacyusb/coprocessor/boards/nrf52840dongle_nrf52840.conf"
-          APP="$RUNNER_TEMP/legacyusb/coprocessor"
-          CONFS="$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.conf;$GITHUB_WORKSPACE/ot-rcp/boards/openthread-upstream.conf"
-          EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.overlay -DEXTRA_CONF_FILE=$CONFS"
+          UPCONF="$GITHUB_WORKSPACE/ot-rcp/boards/openthread-upstream.conf"
+          EXTRA=""
+          if [ "${{ matrix.usb }}" = "true" ]; then
+            # Holyiot dongle: legacy USB stack (copy the sample, swap in the legacy-USB board conf; the folder
+            # must stay named "coprocessor"), external PA/LNA front-end control.
+            mkdir -p "$RUNNER_TEMP/legacyusb"
+            cp -r "$APP" "$RUNNER_TEMP/legacyusb/coprocessor"
+            cp "$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-legacyusb.conf" \
+               "$RUNNER_TEMP/legacyusb/coprocessor/boards/nrf52840dongle_nrf52840.conf"
+            APP="$RUNNER_TEMP/legacyusb/coprocessor"
+            CONFS="$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.conf;$UPCONF"
+            EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.overlay -DEXTRA_CONF_FILE=$CONFS"
+          elif [ "${{ matrix.mcuboot }}" = "true" ]; then
+            EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
+            # the Kconfig list (with the upstream conf) is in MCUBOOT_ARGS
+          else
+            EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-uart-speed.overlay -DEXTRA_CONF_FILE=$UPCONF"
+          fi
           set +e
-          west build -b nrf52840dongle/nrf52840 $APP -d build -p always -- $EXTRA 2>&1 | tee "$RUNNER_TEMP/build.log"
+          west build -b ${{ matrix.board }} $APP -d build -p always -- $EXTRA $MCUBOOT_ARGS 2>&1 | tee "$RUNNER_TEMP/build.log"
           RC=${PIPESTATUS[0]}
           set -e
           if [ "$RC" -ne 0 ]; then
@@ -153,53 +306,127 @@ jobs:
       - name: Verify configuration and OpenThread revision
         run: |
           CFG=ncs/build/coprocessor/zephyr/.config
-          for o in CONFIG_MPSL_FEM=y CONFIG_MPSL_FEM_SIMPLE_GPIO=y CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y \
-                   CONFIG_OPENTHREAD_DEFAULT_TX_POWER=16 CONFIG_OPENTHREAD_PLATFORM_KEY_REF=y; do
+          for o in CONFIG_OPENTHREAD_PLATFORM_KEY_REF=y CONFIG_OPENTHREAD_COPROCESSOR_RCP=y; do
             grep -qx "$o" "$CFG" || { echo "::error::$o missing from $CFG"; exit 1; }
           done
           # Three PSA slots hold the prev/curr/next MAC keys; fewer makes the radio get all-zero keys (silent failure).
           SLOTS=$(sed -n 's/^CONFIG_MBEDTLS_PSA_KEY_SLOT_COUNT=//p' "$CFG")
           [ "${SLOTS:-0}" -ge 3 ] || { echo "::error::CONFIG_MBEDTLS_PSA_KEY_SLOT_COUNT=${SLOTS:-unset}, need >= 3"; exit 1; }
-          UART0_STATUS=$(awk '/uart0: uart@/{f=1} f&&/status =/{print; exit}' ncs/build/coprocessor/zephyr/zephyr.dts)
-          echo "$UART0_STATUS" | grep -q '"disabled"' || { echo "::error::uart0 is not disabled (it owns the FEM pins)"; exit 1; }
-          # The firmware must report the OpenThread commit that OTBR pins ("OPENTHREAD/<sha9>; Zephyr; <date>").
+          if [ "${{ matrix.usb }}" = "true" ]; then
+            for o in CONFIG_MPSL_FEM=y CONFIG_MPSL_FEM_SIMPLE_GPIO=y CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y CONFIG_OPENTHREAD_DEFAULT_TX_POWER=16; do
+              grep -qx "$o" "$CFG" || { echo "::error::$o missing from $CFG"; exit 1; }
+            done
+            UART0_STATUS=$(awk '/uart0: uart@/{f=1} f&&/status =/{print; exit}' ncs/build/coprocessor/zephyr/zephyr.dts)
+            echo "$UART0_STATUS" | grep -q '"disabled"' || { echo "::error::uart0 is not disabled (it owns the FEM pins)"; exit 1; }
+          fi
+          # The firmware must report the OpenThread commit that OTBR pins ("OPENTHREAD/<sha>; Zephyr; <date>").
           VER=$(grep -a -o -m1 "OPENTHREAD/[0-9a-f]*; Zephyr; [A-Za-z0-9: ]*" ncs/build/coprocessor/zephyr/zephyr.elf | head -n1 || true)
           echo "RCP version string: $VER"
           case "$VER" in "OPENTHREAD/$OT_SHORT"*) ;; *) echo "::error::RCP version '$VER' does not match OpenThread $OT_SHORT"; exit 1;; esac
-          grep -q '^#define NCS_VERSION_STRING' ncs/build/coprocessor/zephyr/include/generated/ncs_version.h
           grep NCS_VERSION_STRING ncs/build/coprocessor/zephyr/include/generated/ncs_version.h
-          echo "RCP_VERSION=$VER" >> "$GITHUB_ENV"
 
-      - name: Package DFU zip
+      - name: Package DFU zip (Holyiot dongle)
+        if: ${{ matrix.usb }}
         run: |
           export NRFUTIL_HOME="$RUNNER_TEMP/nrfutil-home"
           nrfutil install nrf5sdk-tools
           nrfutil nrf5sdk-tools pkg generate --hw-version 52 --sd-req 0x00 --sd-id 0x00 \
             --application ncs/build/coprocessor/zephyr/zephyr.hex --application-version 1 ncs/build/dfu_application.zip
 
-      - name: Collect release files
+      - name: Collect artifacts
+        id: collect
         run: |
-          BASE=holyiot-nrf52840-dongle-usb-legacyusb-otupstream
+          if [ "${{ matrix.usb }}" = "true" ]; then
+            BASE="${{ matrix.name }}-usb"
+          else
+            FLOW=noflow; [ "${{ matrix.flow }}" = "y" ] && FLOW=flow
+            BASE="${{ matrix.name }}-${{ matrix.baud }}baud-$FLOW"
+          fi
+          BASE="$BASE${{ matrix.suffix }}"
           mkdir -p out
           cp ncs/build/coprocessor/zephyr/zephyr.hex "out/rcp-$BASE.hex"
           cp ncs/build/coprocessor/zephyr/zephyr.bin "out/rcp-$BASE.bin"
-          cp ncs/build/dfu_application.zip "out/rcp-$BASE-dfu.zip"
+          [ -f ncs/build/dfu_application.zip ] && cp ncs/build/dfu_application.zip "out/rcp-$BASE-dfu.zip" || true
+          if [ "${{ matrix.mcuboot }}" = "true" ]; then
+            # MCUboot variant: rcp-$BASE.hex becomes the merged hex (MCUboot + signed app) for the one-time SWD flash,
+            # rcp-$BASE-update.bin is the signed image for MCUboot serial recovery (mcumgr-client).
+            BUILD=ncs/build
+            set -- "$BUILD"/merged_*.hex
+            if [ -f "$1" ]; then
+              MERGED="$1"
+            else
+              MERGED="$BUILD/merged_fallback.hex"
+              python3 ncs/zephyr/scripts/build/mergehex.py -o "$MERGED" --overlap replace \
+                "$BUILD/mcuboot/zephyr/zephyr.hex" "$BUILD/coprocessor/zephyr/zephyr.signed.hex"
+            fi
+            [ -f "$BUILD/coprocessor/zephyr/zephyr.signed.bin" ] || { echo "::error::signed image missing"; exit 1; }
+            rm -f "out/rcp-$BASE.bin"
+            cp "$MERGED" "out/rcp-$BASE.hex"
+            cp "$BUILD/coprocessor/zephyr/zephyr.signed.bin" "out/rcp-$BASE-update.bin"
+            if [ "${MCUBOOT_DEVKEY:-n}" = "y" ]; then
+              for f in out/rcp-"$BASE"*; do mv "$f" "${f/rcp-$BASE/rcp-$BASE-DEVKEY}"; done
+              BASE="$BASE-DEVKEY"
+            fi
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
           cp ncs/build/coprocessor/zephyr/.config "out/rcp-$BASE-zephyr.config"
-          (cd out && sha256sum rcp-$BASE.hex rcp-$BASE.bin rcp-$BASE-dfu.zip > SHA256SUMS)
+
+      - name: Remove MCUboot signing key
+        if: ${{ always() && matrix.mcuboot }}
+        run: rm -f "${MCUBOOT_KEY_FILE:-/nonexistent}" "$GITHUB_WORKSPACE/overlay-sysbuild-sign.conf"
+
+      - name: Archive build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: rcp-${{ steps.collect.outputs.base }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: [resolve, build]
+    # Publish what was built even if a device build failed (the body says so); never when cancelled or skipped.
+    if: ${{ !cancelled() && needs.resolve.outputs.skip != 'true' && needs.build.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      OTBR_TAG: ${{ needs.resolve.outputs.otbr_tag }}
+      OT_SHA: ${{ needs.resolve.outputs.ot_sha }}
+      OT_SHORT: ${{ needs.resolve.outputs.ot_short }}
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+      BUILD_RESULT: ${{ needs.build.result }}
+    steps:
+      - name: Checkout repository (release notes)
+        uses: actions/checkout@v7
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: rcp-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write release body and checksums
+        run: |
+          set -euo pipefail
+          ls dist | grep -q . || { echo "::error::no firmware was built"; exit 1; }
+          (cd dist && sha256sum rcp-*.hex rcp-*.bin rcp-*.zip 2>/dev/null > SHA256SUMS || true)
           {
             echo "OpenThread RCP firmware matching ot-br-posix $OTBR_TAG"
             echo
-            echo "- Holyiot nRF52840 dongle (USB CDC ACM, legacy USB stack, Nordic Open DFU bootloader, app at 0x1000)"
-            echo "- nRF Connect SDK ${NCS_VERSION} (Zephyr 4.4.2), Thread ${THREAD_VERSION}"
             echo "- OpenThread $OT_SHA (upstream, pinned by ot-br-posix $OTBR_TAG), NOT Nordic's sdk-openthread fork"
-            echo "- RCP version string: $RCP_VERSION"
-            echo "- Built from commit ${GITHUB_SHA}"
-            echo
-            echo "Flash with the DFU zip (nrfutil device program --traits nordicDfu) after the RCP is switched to the bootloader."
+            echo "- nRF Connect SDK ${NCS_VERSION} (Zephyr 4.4.2), Thread ${THREAD_VERSION}"
+            echo "- Built from commit ${GITHUB_SHA} (workflow run ${GITHUB_RUN_ID})"
+            echo "- Devices: Holyiot nRF52840 dongle (USB, DFU zip), Ebyte E73 and Ezurio nRF54L15 (UART at 115200 no flow / 460800 flow; plain and MCUboot)"
+            echo "- Files carry the suffix -otupstream; the Holyiot dongle build is -legacyusb-otupstream"
             echo
             echo "Changes needed to run upstream OpenThread on NCS ${NCS_VERSION}: patches/ncs-radio_nrf5-upstream-openthread.patch,"
             echo "boards/openthread-upstream.conf, and the wake-up option rename. Details: docss/RCP-version-compatibility.md."
-            NOTES="ot-rcp/release-notes/otbr-${OTBR_TAG}.md"
+            if [ "$BUILD_RESULT" != "success" ]; then
+              echo
+              echo "WARNING: some device builds failed in this workflow run, so their files are missing from this release."
+            fi
+            NOTES="release-notes/otbr-${OTBR_TAG}.md"
             if [ -f "$NOTES" ]; then echo; cat "$NOTES"; else
               echo; echo "Built automatically for this OTBR release; not yet tested on hardware."
             fi
@@ -213,4 +440,7 @@ jobs:
           name: RCP firmware (upstream OpenThread) - matches OTBR ${{ env.OTBR_TAG }} - NCS ${{ env.NCS_VERSION }} / OpenThread ${{ env.OT_SHORT }}
           target_commitish: ${{ github.sha }}
           body_path: release-body.md
-          files: out/*
+          # Stays a prerelease until every device type has been tested on hardware (then clear the flag on the
+          # release by hand, or change this line for future releases).
+          prerelease: true
+          files: dist/*
