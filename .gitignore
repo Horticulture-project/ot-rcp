@@ -3,3 +3,6 @@ build
 *.pem
 *.key
 mcuboot-keys/
+
+# Local Claude Code state (agent worktrees, local settings); never commit
+.claude/
