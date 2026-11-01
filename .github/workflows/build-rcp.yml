@@ -192,7 +192,7 @@ jobs:
           # Upstream passes a plain key ID mode to otPlatRadioSetMacKey (platform must ignore it); the NCS glue did
           # `aKeyIdMode >> 3`, treated every call as "clear keys", and every secured TX failed (KEY_ID_INVALID -> Abort).
           # Also tolerates an unset prev/next key reference. See docss/RCP-version-compatibility.md.
-          git -C nrf apply "$GITHUB_WORKSPACE/patches/ncs-radio_nrf5-upstream-openthread.patch"
+          git -C nrf apply "$GITHUB_WORKSPACE/ot-rcp/patches/ncs-radio_nrf5-upstream-openthread.patch"
 
       - name: Generate UART devicetree overlay
         if: ${{ !matrix.usb }}
