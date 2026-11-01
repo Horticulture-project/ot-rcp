@@ -166,9 +166,22 @@ Cause, found by printing the nRF 802.15.4 driver's TX error and the key calls ov
   NCS's `radio_nrf5.c` does `aKeyIdMode >> 3`, gets 0, treats the call as "clear all keys" and never stores them. The driver then has no key for any secured frame.
 - Upstream can also pass an unset prev/next key reference, so `otPlatCryptoExportKey()` fails for it (the `__ASSERT` fired in a build with asserts on).
 
-Fix: [patches/ncs-radio_nrf5-upstream-openthread.patch](../patches/ncs-radio_nrf5-upstream-openthread.patch) (applied by the CI `otup` step): key index 0 clears, anything else is mode 1;
-prev/next fall back to the current key if their reference can't be exported. With it: 26 of 27 TX acked, no `otbr-agent` restarts, RCP and OTBR on the same OpenThread revision.
-Not yet verified: a long soak, `diag rcpcaps`, mesh data flow over hours, Spinel reset to bootloader with this build, and the CI build.
+That first patch (key mode + fallback) was **not enough**: TX was acked at link level, but the peer router never answered (ping 0/N, `RxErrSec` rising)
+because its MIC check failed on every secured frame. Two more causes, found by printing the key references, export errors and the PSA import status over the USB console:
+
+- **PSA key slots.** With `CONFIG_OPENTHREAD_PLATFORM_KEY_REF=y` the RCP's SubMac keeps its prev/curr/next MAC keys as PSA keys (3 slots).
+  NCS sets `CONFIG_MBEDTLS_PSA_KEY_SLOT_COUNT=1` for RCP builds (the fork RCP uses literal keys), so two of three `psa_import_key()` calls returned `-141` (insufficient memory).
+  `SuccessOrAssert` is a no-op without asserts, the reference stayed 0, the export failed and the radio was given an all-zero key.
+- **In-place export.** `otMacKeyMaterial.mKeyMaterial` is a union of the key reference and the literal key. The NCS code exported the key *into* that union, overwriting the reference,
+  so SubMac's later `DestroyKey()` freed nothing and leaked a slot on every key update.
+
+Fix (applied by the CI `otup` step): [patches/ncs-radio_nrf5-upstream-openthread.patch](../patches/ncs-radio_nrf5-upstream-openthread.patch) (key index 0 clears, otherwise mode 1;
+export into local buffers; prev/next fall back to the current key if their reference can't be exported) plus `CONFIG_MBEDTLS_PSA_KEY_SLOT_COUNT=4` in `boards/openthread-upstream.conf`.
+With both: ping to the leader 4/4 and 6/6 (12–15 ms), `RxErrSec` 0, secured frames received from the peer, RCP and OTBR on the same OpenThread revision.
+Not yet verified: a long soak, `diag rcpcaps`, the CI build, and the module/MCUboot flow.
+
+Debug technique (no debugger needed): `printk()` on the USB CDC console shares the Spinel port. Run `otbr-agent` under `strace -f -e trace=read -s 2000` and grep the raw bytes for your marker.
+Attach strace before the agent starts, because the keys are set during init.
 
 Also tried: Zephyr's own coprocessor sample (Zephyr platform layer, no `radio_nrf5.c`) against `cb18e0f`. It builds and runs but showed the same aborts, so that platform layer needs an equivalent fix and was not pursued
 (branch `zephyr-upstream-rcp`).

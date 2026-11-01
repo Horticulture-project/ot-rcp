@@ -1,45 +1,94 @@
 diff --git a/modules/openthread/platform/radio_nrf5.c b/modules/openthread/platform/radio_nrf5.c
-index 8ec0ca1cf6..91f8321986 100644
+index 8ec0ca1cf6..203b7a3d23 100644
 --- a/modules/openthread/platform/radio_nrf5.c
 +++ b/modules/openthread/platform/radio_nrf5.c
-@@ -1195,23 +1195,34 @@ void otPlatRadioSetMacKey(otInstance *aInstance, uint8_t aKeyIdMode, uint8_t aKe
- 	size_t keyLen;
- 	otError error;
+@@ -1190,31 +1190,54 @@ void otPlatRadioSetMacKey(otInstance *aInstance, uint8_t aKeyIdMode, uint8_t aKe
+ 	ARG_UNUSED(aInstance);
+ 	__ASSERT_NO_MSG(aPrevKey != NULL && aCurrKey != NULL && aNextKey != NULL);
  
++	/* Upstream OpenThread passes a plain key ID mode that the platform must ignore (the RCP sends 1, not
++	 * 0x08), so ">> 3" turned every call into "clear keys". Only mode 1 exists: key index 0 clears.
++	 */
++	ARG_UNUSED(aKeyIdMode);
++	uint8_t key_id_mode = (aKeyId == 0) ? 0 : 1;
++	uint8_t prev_key_id = 0;
++	uint8_t next_key_id = 0;
++	uint8_t *prev_key = (uint8_t *)aPrevKey->mKeyMaterial.mKey.m8;
++	uint8_t *curr_key = (uint8_t *)aCurrKey->mKeyMaterial.mKey.m8;
++	uint8_t *next_key = (uint8_t *)aNextKey->mKeyMaterial.mKey.m8;
++
+ #if defined(CONFIG_OPENTHREAD_PLATFORM_KEYS_EXPORTABLE_ENABLE)
+-	__ASSERT_NO_MSG(aKeyType == OT_KEY_TYPE_KEY_REF);
+-	size_t keyLen;
+-	otError error;
+-
 -	error = otPlatCryptoExportKey(aPrevKey->mKeyMaterial.mKeyRef,
 -				      (uint8_t *)aPrevKey->mKeyMaterial.mKey.m8, OT_MAC_KEY_SIZE,
 -				      &keyLen);
 -	__ASSERT_NO_MSG(error == OT_ERROR_NONE);
- 	error = otPlatCryptoExportKey(aCurrKey->mKeyMaterial.mKeyRef,
- 				      (uint8_t *)aCurrKey->mKeyMaterial.mKey.m8, OT_MAC_KEY_SIZE,
- 				      &keyLen);
- 	__ASSERT_NO_MSG(error == OT_ERROR_NONE);
-+	/* Upstream OpenThread may pass an invalid (unset) ref for prev/next: use the current key */
-+	error = otPlatCryptoExportKey(aPrevKey->mKeyMaterial.mKeyRef,
-+				      (uint8_t *)aPrevKey->mKeyMaterial.mKey.m8, OT_MAC_KEY_SIZE,
-+				      &keyLen);
-+	if (error != OT_ERROR_NONE) {
-+		memcpy((uint8_t *)aPrevKey->mKeyMaterial.mKey.m8, aCurrKey->mKeyMaterial.mKey.m8,
-+		       OT_MAC_KEY_SIZE);
-+	}
- 	error = otPlatCryptoExportKey(aNextKey->mKeyMaterial.mKeyRef,
- 				      (uint8_t *)aNextKey->mKeyMaterial.mKey.m8, OT_MAC_KEY_SIZE,
- 				      &keyLen);
+-	error = otPlatCryptoExportKey(aCurrKey->mKeyMaterial.mKeyRef,
+-				      (uint8_t *)aCurrKey->mKeyMaterial.mKey.m8, OT_MAC_KEY_SIZE,
+-				      &keyLen);
 -	__ASSERT_NO_MSG(error == OT_ERROR_NONE);
-+	if (error != OT_ERROR_NONE) {
-+		memcpy((uint8_t *)aNextKey->mKeyMaterial.mKey.m8, aCurrKey->mKeyMaterial.mKey.m8,
-+		       OT_MAC_KEY_SIZE);
+-	error = otPlatCryptoExportKey(aNextKey->mKeyMaterial.mKeyRef,
+-				      (uint8_t *)aNextKey->mKeyMaterial.mKey.m8, OT_MAC_KEY_SIZE,
+-				      &keyLen);
+-	__ASSERT_NO_MSG(error == OT_ERROR_NONE);
++	uint8_t prev_buf[OT_MAC_KEY_SIZE];
++	uint8_t curr_buf[OT_MAC_KEY_SIZE];
++	uint8_t next_buf[OT_MAC_KEY_SIZE];
++
++	if (key_id_mode == 1) {
++		size_t keyLen;
++		otError error;
++
++		__ASSERT_NO_MSG(aKeyType == OT_KEY_TYPE_KEY_REF);
++
++		/* mKeyMaterial is a union of the key reference and the literal key. Export into local
++		 * buffers: exporting in place overwrites the reference, so the stack can no longer
++		 * destroy the PSA key and runs out of key slots.
++		 */
++		error = otPlatCryptoExportKey(aCurrKey->mKeyMaterial.mKeyRef, curr_buf,
++					      OT_MAC_KEY_SIZE, &keyLen);
++		__ASSERT_NO_MSG(error == OT_ERROR_NONE);
++
++		/* Upstream OpenThread may pass an unset ref for prev/next: use the current key. */
++		if (otPlatCryptoExportKey(aPrevKey->mKeyMaterial.mKeyRef, prev_buf, OT_MAC_KEY_SIZE,
++					  &keyLen) != OT_ERROR_NONE) {
++			memcpy(prev_buf, curr_buf, OT_MAC_KEY_SIZE);
++		}
++		if (otPlatCryptoExportKey(aNextKey->mKeyMaterial.mKeyRef, next_buf, OT_MAC_KEY_SIZE,
++					  &keyLen) != OT_ERROR_NONE) {
++			memcpy(next_buf, curr_buf, OT_MAC_KEY_SIZE);
++		}
++
++		prev_key = prev_buf;
++		curr_key = curr_buf;
++		next_key = next_buf;
 +	}
  #else
  	__ASSERT_NO_MSG(aKeyType == OT_KEY_TYPE_LITERAL_KEY);
  #endif
  
 -	uint8_t key_id_mode = aKeyIdMode >> 3;
-+	/* Upstream OpenThread passes a plain key ID mode that the platform must ignore (the RCP sends 1, not
-+	 * 0x08), so ">> 3" turned every call into "clear keys". Only mode 1 exists: key index 0 clears.
-+	 */
-+	ARG_UNUSED(aKeyIdMode);
-+	uint8_t key_id_mode = (aKeyId == 0) ? 0 : 1;
- 	uint8_t prev_key_id = 0;
- 	uint8_t next_key_id = 0;
+-	uint8_t prev_key_id = 0;
+-	uint8_t next_key_id = 0;
+-
+ 	if (key_id_mode == 1) {
+ 		__ASSERT_NO_MSG(NRF_802154_SECURITY_KEY_STORAGE_SIZE >= 3);
  
+@@ -1224,11 +1247,9 @@ void otPlatRadioSetMacKey(otInstance *aInstance, uint8_t aKeyIdMode, uint8_t aKe
+ 
+ 		nrf_802154_security_key_remove_all();
+ 
+-		nrf5_key_store((uint8_t *)aPrevKey->mKeyMaterial.mKey.m8, key_id_mode,
+-			       &prev_key_id);
+-		nrf5_key_store((uint8_t *)aCurrKey->mKeyMaterial.mKey.m8, key_id_mode, &aKeyId);
+-		nrf5_key_store((uint8_t *)aNextKey->mKeyMaterial.mKey.m8, key_id_mode,
+-			       &next_key_id);
++		nrf5_key_store(prev_key, key_id_mode, &prev_key_id);
++		nrf5_key_store(curr_key, key_id_mode, &aKeyId);
++		nrf5_key_store(next_key, key_id_mode, &next_key_id);
+ 
+ 	} else {
+ 		/* aKeyId == 0 is used only to clear keys for stack reset in RCP */
