@@ -294,8 +294,6 @@ jobs:
                "$RUNNER_TEMP/legacyusb/coprocessor/boards/nrf52840dongle_nrf52840.conf"
             APP="$RUNNER_TEMP/legacyusb/coprocessor"
             CONFS="$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.conf;$UPCONF"
-            # TEMPORARY (energy scan wedge debugging): RCP log over Spinel, remove together with boards/openthread-upstream-wdlog.conf
-            CONFS="$CONFS;$GITHUB_WORKSPACE/ot-rcp/boards/openthread-upstream-wdlog.conf"
             EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/nrf52840dongle_nrf52840-fem.overlay -DEXTRA_CONF_FILE=$CONFS"
           elif [ "${{ matrix.mcuboot }}" = "true" ]; then
             EXTRA="-DEXTRA_DTC_OVERLAY_FILE=$GITHUB_WORKSPACE/ot-rcp/boards/${{ matrix.board_overlay }};$GITHUB_WORKSPACE/overlay-uart-speed.overlay"
