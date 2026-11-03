@@ -220,6 +220,15 @@ jobs:
           # Key ID mode / MAC key handling in the nRF platform glue (see docss/RCP-version-compatibility.md)
           git -C nrf apply "$GITHUB_WORKSPACE/ot-rcp/patches/ncs-radio_nrf5-upstream-openthread.patch"
 
+      - name: Energy scan watchdog (NCS radio glue)
+        working-directory: ncs
+        run: |
+          # The 802.15.4 driver can accept an energy detection and never report back; the host then stops
+          # transmitting (seen with both Nordic's and upstream OpenThread). See patches/ncs-radio_nrf5-energy-scan-watchdog.patch.
+          # The NCS workspace is cached: skip if already applied.
+          P="$GITHUB_WORKSPACE/ot-rcp/patches/ncs-radio_nrf5-energy-scan-watchdog.patch"
+          if git -C nrf apply --reverse --check "$P" 2>/dev/null; then echo "already applied"; else git -C nrf apply "$P"; fi
+
       - name: Generate UART devicetree overlay
         if: ${{ !matrix.usb }}
         run: |

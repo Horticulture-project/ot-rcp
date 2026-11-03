@@ -1,0 +1,88 @@
+diff --git a/modules/openthread/platform/radio_nrf5.c b/modules/openthread/platform/radio_nrf5.c
+index 8ec0ca1cf6..5b3d1d93f2 100644
+--- a/modules/openthread/platform/radio_nrf5.c
++++ b/modules/openthread/platform/radio_nrf5.c
+@@ -316,14 +316,56 @@ static int nrf5_set_channel(uint16_t channel)
+ 	return 0;
+ }
+ 
++/* The 802.15.4 driver has been seen to accept an energy detection request and then report neither
++ * a result nor a failure. The pending callback is never cleared, the host's MAC waits for the scan
++ * forever and stops transmitting. Abort the detection if it takes much longer than requested.
++ */
++#define ENERGY_DETECTION_WATCHDOG_MARGIN_MS 500
++
++static void energy_detection_watchdog_handler(struct k_work *work);
++static K_WORK_DELAYABLE_DEFINE(energy_detection_watchdog, energy_detection_watchdog_handler);
++
++static nrf5_energy_detection_done_cb_t energy_detection_take_cb(void)
++{
++	unsigned int key = irq_lock();
++	nrf5_energy_detection_done_cb_t callback = nrf5_data.energy_detection.cb;
++
++	nrf5_data.energy_detection.cb = NULL;
++	irq_unlock(key);
++
++	return callback;
++}
++
++static void energy_detection_watchdog_handler(struct k_work *work)
++{
++	nrf5_energy_detection_done_cb_t callback = energy_detection_take_cb();
++
++	if (callback == NULL) {
++		return;
++	}
++
++	LOG_ERR("Energy detection did not finish, aborting it");
++
++	if (nrf5_data.state == OT_RADIO_STATE_RECEIVE) {
++		(void)nrf_802154_receive();
++	} else {
++		(void)nrf_802154_sleep();
++	}
++
++	callback(OT_RADIO_RSSI_INVALID);
++}
++
+ static int nrf5_energy_detection_start(uint16_t duration, nrf5_energy_detection_done_cb_t done_cb)
+ {
+ 	int err = 0;
+ 
+ 	if (nrf5_data.energy_detection.cb == NULL) {
+ 		nrf5_data.energy_detection.cb = done_cb;
++		k_work_reschedule(&energy_detection_watchdog,
++				  K_MSEC(duration + ENERGY_DETECTION_WATCHDOG_MARGIN_MS));
+ 
+ 		if (nrf_802154_energy_detection((uint32_t)duration * NSEC_PER_USEC) == false) {
++			k_work_cancel_delayable(&energy_detection_watchdog);
+ 			nrf5_data.energy_detection.cb = NULL;
+ 			err = -EBUSY;
+ 		}
+@@ -1976,20 +2018,20 @@ openthread_nrf_802154_transmit_failed(uint8_t *frame, nrf_802154_tx_error_t erro
+ 
+ static void openthread_nrf_802154_energy_detected(const nrf_802154_energy_detected_t *result)
+ {
+-	if (nrf5_data.energy_detection.cb != NULL) {
+-		nrf5_energy_detection_done_cb_t callback = nrf5_data.energy_detection.cb;
++	nrf5_energy_detection_done_cb_t callback = energy_detection_take_cb();
+ 
+-		nrf5_data.energy_detection.cb = NULL;
++	if (callback != NULL) {
++		k_work_cancel_delayable(&energy_detection_watchdog);
+ 		callback(result->ed_dbm);
+ 	}
+ }
+ 
+ static void openthread_nrf_802154_energy_detection_failed(nrf_802154_ed_error_t error)
+ {
+-	if (nrf5_data.energy_detection.cb != NULL) {
+-		nrf5_energy_detection_done_cb_t callback = nrf5_data.energy_detection.cb;
++	nrf5_energy_detection_done_cb_t callback = energy_detection_take_cb();
+ 
+-		nrf5_data.energy_detection.cb = NULL;
++	if (callback != NULL) {
++		k_work_cancel_delayable(&energy_detection_watchdog);
+ 		callback(SHRT_MAX);
+ 	}
+ }
