@@ -1,8 +1,8 @@
 diff --git a/modules/openthread/platform/radio_nrf5.c b/modules/openthread/platform/radio_nrf5.c
-index 8ec0ca1cf6..5b3d1d93f2 100644
+index 8ec0ca1cf6..b257cfac4b 100644
 --- a/modules/openthread/platform/radio_nrf5.c
 +++ b/modules/openthread/platform/radio_nrf5.c
-@@ -316,14 +316,56 @@ static int nrf5_set_channel(uint16_t channel)
+@@ -316,14 +316,57 @@ static int nrf5_set_channel(uint16_t channel)
  	return 0;
  }
  
@@ -34,7 +34,7 @@ index 8ec0ca1cf6..5b3d1d93f2 100644
 +		return;
 +	}
 +
-+	LOG_ERR("Energy detection did not finish, aborting it");
++	LOG_ERR("Energy detection did not finish, aborting it (radio state %d)", nrf5_data.state);
 +
 +	if (nrf5_data.state == OT_RADIO_STATE_RECEIVE) {
 +		(void)nrf_802154_receive();
@@ -51,6 +51,7 @@ index 8ec0ca1cf6..5b3d1d93f2 100644
  
  	if (nrf5_data.energy_detection.cb == NULL) {
  		nrf5_data.energy_detection.cb = done_cb;
++		LOG_INF("ED start %u ms", duration);
 +		k_work_reschedule(&energy_detection_watchdog,
 +				  K_MSEC(duration + ENERGY_DETECTION_WATCHDOG_MARGIN_MS));
  
@@ -59,7 +60,17 @@ index 8ec0ca1cf6..5b3d1d93f2 100644
  			nrf5_data.energy_detection.cb = NULL;
  			err = -EBUSY;
  		}
-@@ -1976,20 +2018,20 @@ openthread_nrf_802154_transmit_failed(uint8_t *frame, nrf_802154_tx_error_t erro
+@@ -996,6 +1039,9 @@ void platformRadioProcess(otInstance *aInstance)
+ 			handle_detect_energy_done(aInstance);
+ 			reset_pending_event(PENDING_EVENT_DETECT_ENERGY_DONE);
+ 		}
++	} else if (is_pending_event_set(PENDING_EVENT_DETECT_ENERGY_DONE) ||
++		   is_pending_event_set(PENDING_EVENT_DETECT_ENERGY)) {
++		LOG_WRN("Energy scan event held back, radio state is TRANSMIT");
+ 	}
+ 
+ 	if (event_pending) {
+@@ -1976,20 +2022,22 @@ openthread_nrf_802154_transmit_failed(uint8_t *frame, nrf_802154_tx_error_t erro
  
  static void openthread_nrf_802154_energy_detected(const nrf_802154_energy_detected_t *result)
  {
@@ -70,6 +81,7 @@ index 8ec0ca1cf6..5b3d1d93f2 100644
 -		nrf5_data.energy_detection.cb = NULL;
 +	if (callback != NULL) {
 +		k_work_cancel_delayable(&energy_detection_watchdog);
++		LOG_INF("ED done %d dBm", result->ed_dbm);
  		callback(result->ed_dbm);
  	}
  }
@@ -83,6 +95,7 @@ index 8ec0ca1cf6..5b3d1d93f2 100644
 -		nrf5_data.energy_detection.cb = NULL;
 +	if (callback != NULL) {
 +		k_work_cancel_delayable(&energy_detection_watchdog);
++		LOG_WRN("ED failed, error %d", error);
  		callback(SHRT_MAX);
  	}
  }
